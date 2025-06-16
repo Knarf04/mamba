@@ -60,6 +60,7 @@ class MHA(nn.Module):
         rotary_emb_dim=0,
         rotary_emb_base=10000.0,
         rotary_emb_interleaved=False,
+        exp_type={},
         device=None,
         dtype=None,
     ) -> None:
@@ -106,6 +107,11 @@ class MHA(nn.Module):
                 **factory_kwargs
             )
         self.out_proj = nn.Linear(out_dim + self.mlp_dim // 2, embed_dim, bias=out_proj_bias, **factory_kwargs)
+
+        self.exp_type = exp_type
+
+        if "context_length" not in self.exp_type.keys():
+            self.exp_type["context_length"] = 4096
 
     def allocate_inference_cache(self, batch_size, max_seqlen, dtype=None):
         dtype = self.out_proj.weight.dtype if dtype is None else dtype
