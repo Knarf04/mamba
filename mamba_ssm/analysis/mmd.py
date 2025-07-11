@@ -89,7 +89,7 @@ def mmd_ssd_full(dt, A, B, C, dt_bias=None, dt_softplus=True, dt_limit=(0.0, flo
         if dt_bias is not None:
             dt = dt + dt_bias
         if dt_softplus:
-            dt = F.softplus(dt)
+            dt = torch.nn.functional.softplus(dt)
         if dt_limit:
             dt = torch.clamp(dt, dt_limit[0], dt_limit[1])
 
@@ -109,7 +109,7 @@ def mmd_ssd_full_chunk(dt, A, B, C, chunk_size, dt_bias=None, dt_softplus=True, 
         if dt_bias is not None:
             dt = dt + dt_bias
         if dt_softplus:
-            dt = F.softplus(dt)
+            dt = torch.nn.functional.softplus(dt)
         if dt_limit:
             dt = torch.clamp(dt, dt_limit[0], dt_limit[1])
 
