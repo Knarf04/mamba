@@ -43,7 +43,7 @@ def create_block(
     cp_mesh: Optional[DeviceMesh] = None,
     cp_mamba_impl: Optional[str] = None,
     cp_attn_impl: Optional[str] = None,
-    exp_type={},
+    experiments={},
     device=None,
     dtype=None,
 ):
@@ -54,7 +54,7 @@ def create_block(
     if attn_cfg is None:
         attn_cfg = {}
     factory_kwargs = {"device": device, "dtype": dtype}
-    mixer_cls_kwargs = dict(layer_idx=layer_idx, exp_type=exp_type, **factory_kwargs)
+    mixer_cls_kwargs = dict(layer_idx=layer_idx, experiments=experiments, **factory_kwargs)
     if layer_idx not in attn_layer_idx:
         # Create a copy of the config to modify
         ssm_cfg = copy.deepcopy(ssm_cfg) if ssm_cfg is not None else {}
@@ -157,7 +157,7 @@ class MixerModel(nn.Module):
         cp_mesh: Optional[DeviceMesh] = None,
         cp_mamba_impl: Optional[str] = None,
         cp_attn_impl: Optional[str] = None,
-        exp_type: dict = {},
+        experiments: dict = {},
         device=None,
         dtype=None,
     ) -> None:
@@ -193,7 +193,7 @@ class MixerModel(nn.Module):
                     cp_mesh=cp_mesh,
                     cp_mamba_impl=cp_mamba_impl,
                     cp_attn_impl=cp_attn_impl,
-                    exp_type=exp_type,
+                    experiments=experiments,
                     **factory_kwargs,
                 )
                 for i in range(n_layer)
@@ -279,7 +279,7 @@ class MambaLMHeadModel(nn.Module, GenerationMixin):
         factory_kwargs = {"device": device, "dtype": dtype}
 
         # pass experiment arguments through config
-        exp_type = getattr(config, "exp_type", {})
+        experiments = getattr(config, "experiments", {})
         
         super().__init__()
         if vocab_size % pad_vocab_size_multiple != 0:
@@ -301,7 +301,7 @@ class MambaLMHeadModel(nn.Module, GenerationMixin):
             cp_mesh=cp_mesh,
             cp_mamba_impl=cp_mamba_impl,
             cp_attn_impl=cp_attn_impl,
-            exp_type=exp_type,
+            experiments=experiments,
             **factory_kwargs,
         )
         self.lm_head = nn.Linear(d_model, vocab_size, bias=False, **factory_kwargs)

@@ -432,20 +432,20 @@ def scan(
     A = -torch.exp(mamba2.A_log.float())  # (nheads) or (d_inner, d_state)
     self.seq_len = x.shape[1]
 
-    if "layer" in self.exp_type.keys():
-        if self.layer_idx in self.exp_type["layer"]:
+    if "layer" in self.experiments.keys():
+        if self.layer_idx in self.experiments["layer"]:
             A = A.clone()
-            A *= int(self.exp_type["context_length"])/self.seq_len
+            A *= int(self.experiments["context_length"])/self.seq_len
             B = B.clone()
-            B *= int(self.exp_type["context_length"])/self.seq_len
+            B *= int(self.experiments["context_length"])/self.seq_len
 
-    if "head" in self.exp_type.keys():
+    if "head" in self.experiments.keys():
         A = A.clone()
-        A[..., self.head_mask.to(A.device)] *= int(self.exp_type["context_length"])/self.seq_len
+        A[..., self.head_mask.to(A.device)] *= int(self.experiments["context_length"])/self.seq_len
         B = B.clone()
-        B[..., self.head_mask.to(B.device)] *= int(self.exp_type["context_length"])/self.seq_len
+        B[..., self.head_mask.to(B.device)] *= int(self.experiments["context_length"])/self.seq_len
 
-    if "erf" in self.exp_type.keys():
+    if "erf" in self.experiments.keys():
         mmd = mmd_from_ssd_inputs(
             dt, 
             A, 
@@ -460,10 +460,10 @@ def scan(
             "seq_len": self.seq_len,
             "erf": mmd.tolist()
             }
-        with open(self.exp_type["erf"], 'a') as f:
+        with open(self.experiments["erf"], 'a') as f:
             f.write(json.dumps(record) + '\n')
         
-    if "logits" in self.exp_type.keys():
+    if "logits" in self.experiments.keys():
         curr_state = {}
         curr_state['hidden_states'] = hidden_states.view(batch_size, seq_len, -1, self.head_dim)
         curr_state['dt'] = dt
@@ -472,12 +472,12 @@ def scan(
         curr_state['C'] = C.view(batch_size, seq_len, self.n_groups, -1)
         curr_state['D'] = self.D
         curr_state['dt_bias'] = self.dt_bias
-        torch.save(curr_state, os.path.join(self.exp_type["logits"], f'curr_state_{seq_len}_{self.layer_idx}.pt'))
+        torch.save(curr_state, os.path.join(self.experiments["logits"], f'curr_state_{seq_len}_{self.layer_idx}.pt'))
 
     dt_bias = self.dt_bias
     dt_softplus = True
 
-    if "longmamba" in self.exp_type.keys():
+    if "longmamba" in self.experiments.keys():
         # dt alignment
         params_for_debug = {}
         dt = nn.functional.softplus(dt + self.dt_bias)
@@ -552,7 +552,7 @@ def scan(
         dt_bias = None
         dt_softplus = False
         # Change params_for_debug from outputing to saving to log file
-        with open(self.exp_type["longmamba"], 'a') as f:
+        with open(self.experiments["longmamba"], 'a') as f:
             f.write(json.dumps(params_for_debug) + '\n')
 
     y = chunk_scan_combined_impl(
@@ -568,8 +568,8 @@ def scan(
         z=rearrange(z, "b l (h p) -> b l h p", p=mamba2.headdim)
         if not mamba2.rmsnorm
         else None,
-        dt_bias=mamba2.dt_bias,
-        dt_softplus=True,
+        dt_bias=dt_bias,
+        dt_softplus=dt_softplus,
         seq_idx=seq_idx,
         cu_seqlens=None,
         return_final_states=False,
