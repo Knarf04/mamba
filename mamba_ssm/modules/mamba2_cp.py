@@ -25,6 +25,9 @@ try:
 except ImportError:
     causal_conv1d_fn = None, None
 
+import h5py
+from mamba_ssm.analysis.mmd import mmd_ssd_full_chunk
+from mamba_ssm.analysis.upi import scale_dt
 
 class CausalPassingFn(torch.autograd.Function):
     """
@@ -430,130 +433,29 @@ def scan(
         dim=-1,
     )
     A = -torch.exp(mamba2.A_log.float())  # (nheads) or (d_inner, d_state)
-    self.seq_len = x.shape[1]
 
-    if "layer" in self.experiments.keys():
-        if self.layer_idx in self.experiments["layer"]:
-            A = A.clone()
-            A *= int(self.experiments["context_length"])/self.seq_len
-            B = B.clone()
-            B *= int(self.experiments["context_length"])/self.seq_len
-
-    if "head" in self.experiments.keys():
-        A = A.clone()
-        A[..., self.head_mask.to(A.device)] *= int(self.experiments["context_length"])/self.seq_len
-        B = B.clone()
-        B[..., self.head_mask.to(B.device)] *= int(self.experiments["context_length"])/self.seq_len
-
-    if "erf" in self.experiments.keys():
-        mmd = mmd_from_ssd_inputs(
+    if not self.erf_rec and "erf" in self.experiments.keys():
+        mmd = mmd_ssd_full_chunk(
             dt, 
             A, 
-            B.view(batch_size, seq_len, self.n_groups, -1), 
-            C.view(batch_size, seq_len, self.n_groups, -1), 
+            B.view(batch_size, seq_len, self.ngroups, -1), 
+            C.view(batch_size, seq_len, self.ngroups, -1), 
             dt_bias=self.dt_bias, 
             dt_softplus=True, 
             dt_limit=(0.0, float("inf"))
             )
-        record = {
-            "layer_idx": self.layer_idx,
-            "seq_len": self.seq_len,
-            "erf": mmd.tolist()
-            }
-        with open(self.experiments["erf"], 'a') as f:
-            f.write(json.dumps(record) + '\n')
-        
-    if "logits" in self.experiments.keys():
-        curr_state = {}
-        curr_state['hidden_states'] = hidden_states.view(batch_size, seq_len, -1, self.head_dim)
-        curr_state['dt'] = dt
-        curr_state['A'] = A
-        curr_state['B'] = B.view(batch_size, seq_len, self.n_groups, -1)
-        curr_state['C'] = C.view(batch_size, seq_len, self.n_groups, -1)
-        curr_state['D'] = self.D
-        curr_state['dt_bias'] = self.dt_bias
-        torch.save(curr_state, os.path.join(self.experiments["logits"], f'curr_state_{seq_len}_{self.layer_idx}.pt'))
 
-    dt_bias = self.dt_bias
-    dt_softplus = True
-
-    if "longmamba" in self.experiments.keys():
-        # dt alignment
-        params_for_debug = {}
-        dt = nn.functional.softplus(dt + self.dt_bias)
-        if False:
-        # if merge_config is not None and merge_config['model_arch'] == "ours" and int(self.seq_len/1e3) > 2:
-            channel_threshold = merge_config['c']
-            tA_prod_path = f"./artifacts/{merge_config['align_path']}/tA_prod/tA_prod_layer_{self.layer_idx}.pt"
-            alpha_path = f"./artifacts/{merge_config['align_path']}/alpha/alpha_layer_{self.layer_idx}.pt"
-            decay_path = f"./artifacts/{merge_config['align_path']}/decay/decay_layer_{self.layer_idx}.pt"
-            dt_thre_path = f"./artifacts/{merge_config['align_path']}/delta_t-thre/delta_t-thre_layer_{self.layer_idx}.pt"
-            tA_prod = torch.load(tA_prod_path, map_location=dt.device)
-            self.channel_mask = tA_prod > channel_threshold
-            whether_mask = self.channel_mask.sum() != 0
-            available_values = []
-            if merge_config['our_method'] in ["alpha", "offline"]:
-                alpha_all = torch.load(alpha_path, map_location=dt.device)
-                for k in alpha_all:
-                    available_values.append(int(k[:-1])*1e3)
-            elif merge_config['our_method'] in ["bound", "norm"]:  
-                decay = torch.load(decay_path, map_location=dt.device)
-            elif merge_config['our_method'] in ["dt_thre"]:
-                dt_thre_all = torch.load(dt_thre_path, map_location=dt.device)
-                for k in dt_thre_all:
-                    available_values.append(int(k[:-1])*1e3)
-                
-            self.slow_factor = 0
-            self.topk = 2000
-            dt = rearrange(dt, "b l h -> b h l")
-            if merge_config['our_method'] == "channelwise_topk" and whether_mask:
-                topk_mask = get_topk_mask_channelwise(delta_t=dt[:, self.channel_mask], k=self.topk)
-                dt[:, self.channel_mask] = torch.where(topk_mask, dt[:, self.channel_mask], dt[:, self.channel_mask] * self.slow_factor)
-            elif merge_config['our_method'] == "all_topk" and whether_mask:
-                topk_indice = get_top_k_token_indices(dt[:, self.channel_mask], k=self.topk)
-                topk_mask = torch.zeros_like(dt[:, self.channel_mask], dtype=torch.bool)
-                topk_mask[:,:,topk_indice] = True
-                dt[:, self.channel_mask] = torch.where(topk_mask, dt[:, self.channel_mask], dt[:, self.channel_mask] * self.slow_factor)
-            elif whether_mask and merge_config['b'] != 0:
-                key_num = int(min(available_values, key=lambda x: abs(self.seqlen - x))/1e3) if available_values != [] else None
-                if "alpha" in merge_config['our_method']:
-                    channel_alpha = alpha_all[f"{key_num}k"].to(dt.device)
-                    topk_mask = get_channelwise_topAlpha(delta_t=dt[:, self.channel_mask], alpha=channel_alpha[self.channel_mask]*merge_config['b'])
-                    dt[:, self.channel_mask] = torch.where(topk_mask, dt[:, self.channel_mask], dt[:, self.channel_mask] * self.slow_factor)
-                elif "offline" in merge_config['our_method']:
-                    key_num_offline = int(min(available_values, key=lambda x: abs(self.seqlen - x))/1e3)
-                    channel_alpha = alpha_all[f"{key_num_offline}k"].to(dt.device)
-                    topk_mask, _ = get_channelwise_offline(delta_t=dt[:, self.channel_mask], alpha=channel_alpha[self.channel_mask]*merge_config['b'])
-                    dt[:, self.channel_mask] = torch.where(topk_mask, dt[:, self.channel_mask], dt[:, self.channel_mask] * self.slow_factor)
-                elif "bound" in merge_config['our_method']:
-                    topk_mask = get_channelwise_topBound(delta_t=dt[:, self.channel_mask], decay=decay[self.channel_mask]*merge_config['b'])
-                    dt[:, self.channel_mask] = torch.where(topk_mask, dt[:, self.channel_mask], dt[:, self.channel_mask] * self.slow_factor)
-                elif "norm" in merge_config['our_method']:
-                    dt_norm = get_channelwise_normalize(delta_t=dt[:, self.channel_mask], decay=decay[self.channel_mask]*merge_config['b'])
-                    dt[:, self.channel_mask] = dt_norm
-                elif "dt_thre" in merge_config['our_method']:
-                    channel_dt_thre_all = dt_thre_all[f"{key_num}k"].to(dt.device)
-                    # self.dt_thre[f"layer_{self.layer_idx}"] = channel_dt_thre_all
-                    topk_mask = get_channelwise_dt_threshold(delta_t=dt[:, self.channel_mask], dt_thre=channel_dt_thre_all[self.channel_mask]*merge_config['b'])
-                    dt[:, self.channel_mask] = torch.where(topk_mask, dt[:, self.channel_mask], dt[:, self.channel_mask] * self.slow_factor)
+        with h5py.File(self.experiments["erf"], 'a') as f:
+            dset = f[f"mmd_{self.layer_idx}_{seqlen}"]
+            old = dset.shape[0]
+            max_rec = self.experiments["max_rec"]
+            if old + batch_size > max_rec:
+                batch_slice = max_rec - old
+                self.erf_rec = False
             else:
-                if whether_mask:
-                    print("Warning: no method is applied")
-                dt[:, self.channel_mask] = dt[:, self.channel_mask] * 0
-            dt = rearrange(dt, "b h l -> b l h")
-        if merge_config['save_para4debug']:
-            params_for_debug['A'] = A.clone().cpu()
-            params_for_debug['Sb_x'] = B.clone().cpu()  # B before discretization
-            params_for_debug['C'] = C.clone().cpu()
-            params_for_debug['delta_t'] = dt.clone().cpu()
-            print("Save parameters mamba2 debug")
-            params_for_debug['B_t'] = None
-        
-        dt_bias = None
-        dt_softplus = False
-        # Change params_for_debug from outputing to saving to log file
-        with open(self.experiments["longmamba"], 'a') as f:
-            f.write(json.dumps(params_for_debug) + '\n')
+                batch_slice = batch_size
+            dset.resize(old+batch_slice, axis=0)
+            dset[old:old+batch_slice] = mmd[:batch_slize].cpu().numpy()
 
     y = chunk_scan_combined_impl(
         rearrange(x, "b l (h p) -> b l h p", p=mamba2.headdim),
@@ -568,8 +470,8 @@ def scan(
         z=rearrange(z, "b l (h p) -> b l h p", p=mamba2.headdim)
         if not mamba2.rmsnorm
         else None,
-        dt_bias=dt_bias,
-        dt_softplus=dt_softplus,
+        dt_bias=mamba2.dt_bias,
+        dt_softplus=True,
         seq_idx=seq_idx,
         cu_seqlens=None,
         return_final_states=False,
@@ -592,7 +494,27 @@ class _Mamba2Ref(Mamba2):
             raise NotImplementedError
         if cu_seqlens is not None:
             raise NotImplementedError
+
+        if not self.h5_init:
+            if "erf" in self.experiments.keys():
+                erf_dataset_name = f"mmd_{self.layer_idx}_{seqlen}"
+                with h5py.File(self.experiments["erf"], "a") as f:
+                    if erf_dataset_name not in f:
+                        f.create_dataset(
+                            erf_dataset_name,
+                            shape=(0, self.nheads, seqlen),          
+                            maxshape=(None, self.nheads, seqlen),    
+                            dtype="float32",
+                            chunks=(batch, self.nheads, seqlen),  
+                        )
+            self.h5_init = True
+
         z0, x0, z, xBC, dt = in_proj_split(u, self)
+
+        if "upi" in self.experiments.keys():
+            with torch.no_grad():
+                scale = scale_dt(self.upi_mask, dt, self.dt_bias).detach()
+            dt *= scale
 
         xBC = conv(xBC, self, seq_idx)
         y = scan(
@@ -646,7 +568,27 @@ class Mamba2CP(Mamba2):
             raise NotImplementedError
         if inference_params is not None:
             raise NotImplementedError
+
+        if not self.h5_init:
+            if "erf" in self.experiments.keys():
+                erf_dataset_name = f"mmd_{self.layer_idx}_{seqlen}"
+                with h5py.File(self.experiments["erf"], "a") as f:
+                    if erf_dataset_name not in f:
+                        f.create_dataset(
+                            erf_dataset_name,
+                            shape=(0, self.nheads, seqlen),          
+                            maxshape=(None, self.nheads, seqlen),    
+                            dtype="float32",
+                            chunks=(batch, self.nheads, seqlen),  
+                        )
+            self.h5_init = True
+
         z0, x0, z, xBC, dt = in_proj_split(u, self)
+
+        if "upi" in self.experiments.keys():
+            with torch.no_grad():
+                scale = scale_dt(self.upi_mask, dt, self.dt_bias).detach()
+            dt *= scale
 
         xBC = conv_cp(xBC, self, self.cp_mesh, seq_idx)
         y = scan(
@@ -743,7 +685,7 @@ class MHACP(MHA):
             kv = seq_to_zigzag_comms(kv, self.cp_mesh, self.seq_dim)
 
         k, v = kv.unbind(dim=-3)
-        # TODO: Add scaling here!
+        # TODO: Add scaling here
         context = self.ring_flash_attn_impl(
             q,
             k,
