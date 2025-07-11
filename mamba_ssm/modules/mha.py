@@ -60,7 +60,7 @@ class MHA(nn.Module):
         rotary_emb_dim=0,
         rotary_emb_base=10000.0,
         rotary_emb_interleaved=False,
-        exp_type={},
+        experiments={},
         device=None,
         dtype=None,
     ) -> None:
@@ -91,8 +91,12 @@ class MHA(nn.Module):
         qkv_dim = self.head_dim * (self.num_heads + 2 * self.num_heads_kv)
         out_dim = self.head_dim * self.num_heads
 
+        self.experiments = experiments
+
         if self.rotary_emb_dim > 0:
             assert RotaryEmbedding is not None, "rotary requires flash_attn to be installed"
+            # if "upi" in self.experiments.keys():
+            #     rotary_emb_base *= 8
             self.rotary_emb = RotaryEmbedding(
                 self.rotary_emb_dim,
                 base=rotary_emb_base,
@@ -108,10 +112,6 @@ class MHA(nn.Module):
             )
         self.out_proj = nn.Linear(out_dim + self.mlp_dim // 2, embed_dim, bias=out_proj_bias, **factory_kwargs)
 
-        self.exp_type = exp_type
-
-        if "context_length" not in self.exp_type.keys():
-            self.exp_type["context_length"] = 4096
 
     def allocate_inference_cache(self, batch_size, max_seqlen, dtype=None):
         dtype = self.out_proj.weight.dtype if dtype is None else dtype
