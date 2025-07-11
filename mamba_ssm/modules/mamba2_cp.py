@@ -517,11 +517,6 @@ class _Mamba2Ref(Mamba2):
                         )
             self.h5_init = True
 
-        if "upi" in self.experiments.keys():
-            with torch.no_grad():
-                scale = scale_dt(self.upi_mask, dt, self.dt_bias).detach()
-            dt *= scale
-
         xBC = conv(xBC, self, seq_idx)
         y = scan(
             mamba_chunk_scan_combined_non_cp, xBC, dt, z, self, seq_idx, cp_mesh=None
@@ -591,11 +586,6 @@ class Mamba2CP(Mamba2):
                             chunks=(batch, self.nheads, seqlen),  
                         )
             self.h5_init = True
-
-        if "upi" in self.experiments.keys():
-            with torch.no_grad():
-                scale = scale_dt(self.upi_mask, dt, self.dt_bias).detach()
-            dt *= scale
 
         xBC = conv_cp(xBC, self, self.cp_mesh, seq_idx)
         y = scan(
