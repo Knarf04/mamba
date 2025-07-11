@@ -434,28 +434,33 @@ def scan(
     )
     A = -torch.exp(mamba2.A_log.float())  # (nheads) or (d_inner, d_state)
 
-    if not self.erf_rec and "erf" in self.experiments.keys():
+    batch, seqlen, _ = x.shape
+    if not mamba2.erf_rec and "erf" in mamba2.experiments.keys():
         mmd = mmd_ssd_full_chunk(
             dt, 
             A, 
-            B.view(batch_size, seq_len, self.ngroups, -1), 
-            C.view(batch_size, seq_len, self.ngroups, -1), 
-            dt_bias=self.dt_bias, 
+            B.view(batch, seqlen, mamba2.ngroups, -1), 
+            C.view(batch, seqlen, mamba2.ngroups, -1), 
+            dt_bias=mamba2.dt_bias, 
             dt_softplus=True, 
             dt_limit=(0.0, float("inf"))
             )
 
-        with h5py.File(self.experiments["erf"], 'a') as f:
-            dset = f[f"mmd_{self.layer_idx}_{seqlen}"]
+        with h5py.File(mamba2.experiments["erf"], 'a') as f:
+            dset = f[f"mmd_{mamba2.layer_idx}_{seqlen}"]
             old = dset.shape[0]
-            max_rec = self.experiments["max_rec"]
-            if old + batch_size > max_rec:
+            max_rec = mamba2.experiments["max_rec"]
+            if old + batch > max_rec:
                 batch_slice = max_rec - old
-                self.erf_rec = False
+                mamba2.erf_rec = False
             else:
-                batch_slice = batch_size
+                batch_slice = batch
             dset.resize(old+batch_slice, axis=0)
-            dset[old:old+batch_slice] = mmd[:batch_slize].cpu().numpy()
+            dset[old:old+batch_slice] = mmd[:batch_slice].cpu().numpy()
+
+    if "upi" in mamba2.experiments.keys():
+        # Precompute scaled delta and disable later ones
+        dt = mamba2.upi_mask * F.softplus(dt + mamba2.dt_bias)
 
     y = chunk_scan_combined_impl(
         rearrange(x, "b l (h p) -> b l h p", p=mamba2.headdim),
@@ -470,8 +475,8 @@ def scan(
         z=rearrange(z, "b l (h p) -> b l h p", p=mamba2.headdim)
         if not mamba2.rmsnorm
         else None,
-        dt_bias=mamba2.dt_bias,
-        dt_softplus=True,
+        dt_bias=None, #mamba2.dt_bias,
+        dt_softplus=False, #True,
         seq_idx=seq_idx,
         cu_seqlens=None,
         return_final_states=False,
@@ -495,6 +500,9 @@ class _Mamba2Ref(Mamba2):
         if cu_seqlens is not None:
             raise NotImplementedError
 
+        z0, x0, z, xBC, dt = in_proj_split(u, self)
+
+        batch, seqlen, dim = u.shape
         if not self.h5_init:
             if "erf" in self.experiments.keys():
                 erf_dataset_name = f"mmd_{self.layer_idx}_{seqlen}"
@@ -508,8 +516,6 @@ class _Mamba2Ref(Mamba2):
                             chunks=(batch, self.nheads, seqlen),  
                         )
             self.h5_init = True
-
-        z0, x0, z, xBC, dt = in_proj_split(u, self)
 
         if "upi" in self.experiments.keys():
             with torch.no_grad():
@@ -568,7 +574,10 @@ class Mamba2CP(Mamba2):
             raise NotImplementedError
         if inference_params is not None:
             raise NotImplementedError
-
+        
+        z0, x0, z, xBC, dt = in_proj_split(u, self)
+        
+        batch, seqlen, dim = u.shape
         if not self.h5_init:
             if "erf" in self.experiments.keys():
                 erf_dataset_name = f"mmd_{self.layer_idx}_{seqlen}"
@@ -582,8 +591,6 @@ class Mamba2CP(Mamba2):
                             chunks=(batch, self.nheads, seqlen),  
                         )
             self.h5_init = True
-
-        z0, x0, z, xBC, dt = in_proj_split(u, self)
 
         if "upi" in self.experiments.keys():
             with torch.no_grad():

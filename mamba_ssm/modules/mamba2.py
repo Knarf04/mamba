@@ -160,7 +160,8 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
 
         # load head mask for scaling
         if "upi" in self.experiments.keys():
-            self.upi_mask = torch.load(self.experiments["upi"])[layer_idx] # (nheads,)
+            # self.upi_mask = torch.load(self.experiments["upi"])[layer_idx].to(device) # (nheads,)
+            self.register_buffer('upi_mask', torch.load(self.experiments["upi"])[layer_idx])
 
         self.h5_init = True
         self.erf_rec = True
@@ -212,20 +213,16 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
         zxbcdt = self.in_proj(u)  # (B, L, d_in_proj) or (B * L, d_in_proj)
         if seqlen_og is not None:
             zxbcdt = rearrange(zxbcdt, "(b l) d -> b l d", l=seqlen)
-        
-        if "upi" in self.experiments.keys():
-            with torch.no_grad():
-                # B & C are grouped and shared across heads
-                # A & dt are for each head, so we should scale them to get head-wise control
-                scale = scale_dt(self.upi_mask, zxbcdt[..., -self.nheads:], self.dt_bias).detach()
-
-            zxbcdt = torch.cat([zxbcdt[..., :-self.nheads], zxbcdt[..., -self.nheads:] * scale], dim=-1)
 
         # If the model is loaded in fp16, without the .float() here, A might be -inf
         A = -torch.exp(self.A_log.float())  # (nheads) or (d_inner, d_state)
         dt_limit_kwargs = {} if self.dt_limit == (0.0, float("inf")) else dict(dt_limit=self.dt_limit)
-        if self.use_mem_eff_path and inference_params is None:
-            assert False, "Warning: scaling not implemented!"
+        if self.use_mem_eff_path and inference_params is None:     
+            if "upi" in self.experiments.keys():
+                # B & C are grouped and shared across heads
+                # A & dt are for each head, so we should scale them to get head-wise control
+                scale = scale_dt(self.upi_mask, zxbcdt[..., -self.nheads:], self.dt_bias)
+                zxbcdt = torch.cat([zxbcdt[..., :-self.nheads], zxbcdt[..., -self.nheads:] * scale], dim=-1)
             out = mamba_split_conv1d_scan_combined(
                 zxbcdt,
                 rearrange(self.conv1d.weight, "d 1 w -> d w"),
@@ -290,8 +287,8 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                 mmd = mmd_ssd_full_chunk(
                     dt, 
                     A, 
-                    B.view(batch_size, seq_len, self.ngroups, -1), 
-                    C.view(batch_size, seq_len, self.ngroups, -1), 
+                    B.view(batch, seqlen, self.ngroups, -1), 
+                    C.view(batch, seqlen, self.ngroups, -1), 
                     dt_bias=self.dt_bias, 
                     dt_softplus=True, 
                     dt_limit=(0.0, float("inf"))
@@ -301,13 +298,13 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                     dset = f[f"mmd_{self.layer_idx}_{seqlen}"]
                     old = dset.shape[0]
                     max_rec = self.experiments["max_rec"]
-                    if old + batch_size > max_rec:
+                    if old + batch > max_rec:
                         batch_slice = max_rec - old
                         self.erf_rec = False
                     else:
-                        batch_slice = batch_size
+                        batch_slice = batch
                     dset.resize(old+batch_slice, axis=0)
-                    dset[old:old+batch_slice] = mmd[:batch_slize].cpu().numpy()
+                    dset[old:old+batch_slice] = mmd[:batch_slice].cpu().numpy()
                 
             if self.logits_rec and "logits" in self.experiments.keys(): # Save one set of logits for analysis
                 with torch.no_grad():
@@ -320,9 +317,13 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                     curr_state['D'] = self.D.cpu()
                     curr_state['dt_bias'] = self.dt_bias.cpu()
 
-                    logits_file = os.path.join(self.experiments["logits"], f'curr_state_{seq_len}_{self.layer_idx}.pt')
+                    logits_file = os.path.join(self.experiments["logits"], f'curr_state_{seqlen}_{self.layer_idx}.pt')
                     torch.save(curr_state, logits_file)
                     self.logits_rec = False
+
+            if "upi" in self.experiments.keys():
+                # Precompute scaled delta and disable later ones
+                dt = self.upi_mask * F.softplus(dt + self.dt_bias)
 
             y = mamba_chunk_scan_combined(
                 rearrange(x, "b l (h p) -> b l h p", p=self.headdim),
@@ -333,8 +334,8 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                 chunk_size=self.chunk_size,
                 D=rearrange(self.D, "(h p) -> h p", p=self.headdim) if self.D_has_hdim else self.D,
                 z=rearrange(z, "b l (h p) -> b l h p", p=self.headdim) if not self.rmsnorm else None,
-                dt_bias=self.dt_bias,
-                dt_softplus=True,
+                dt_bias=None, #self.dt_bias,
+                dt_softplus=False, # True,
                 seq_idx=seq_idx,
                 cu_seqlens=cu_seqlens,
                 **dt_limit_kwargs,
