@@ -16,4 +16,4 @@ class MambaConfig:
     fused_add_norm: bool = True
     pad_vocab_size_multiple: int = 8
     tie_embeddings: bool = True
-    experiments: dict = {}
+    experiments: dict = field(default_factory=dict)
