@@ -1,5 +1,5 @@
 import torch
-import torch.nn.funcitonal as F
+import torch.nn.functional as F
 
 # dt *= scale_dt(self.upi_mask, dt, self.dt_bias)
 def scale_dt(scale_mask, dt, dt_bias):
