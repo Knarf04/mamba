@@ -159,9 +159,10 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
         self.experiments = experiments
 
         # load head mask for scaling
+        self.register_buffer('upi_mask', torch.ones(self.nheads), persistent=True)
         if "upi" in self.experiments.keys():
             # self.upi_mask = torch.load(self.experiments["upi"])[layer_idx].to(device) # (nheads,)
-            self.register_buffer('upi_mask', torch.load(self.experiments["upi"])[layer_idx])
+            self.upi_mask = torch.load(self.experiments["upi"])[layer_idx]
 
         self.h5_init = True
         self.erf_rec = True
@@ -323,7 +324,7 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
 
             if "upi" in self.experiments.keys():
                 # Precompute scaled delta and disable later ones
-                dt = self.upi_mask * F.softplus(dt + self.dt_bias)
+                dt = F.softplus(dt + self.dt_bias) / self.upi_mask
 
             y = mamba_chunk_scan_combined(
                 rearrange(x, "b l (h p) -> b l h p", p=self.headdim),

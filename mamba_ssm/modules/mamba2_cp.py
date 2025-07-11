@@ -460,7 +460,7 @@ def scan(
 
     if "upi" in mamba2.experiments.keys():
         # Precompute scaled delta and disable later ones
-        dt = mamba2.upi_mask * F.softplus(dt + mamba2.dt_bias)
+        dt = F.softplus(dt + mamba2.dt_bias) / mamba2.upi_mask
 
     y = chunk_scan_combined_impl(
         rearrange(x, "b l (h p) -> b l h p", p=mamba2.headdim),
@@ -576,7 +576,7 @@ class Mamba2CP(Mamba2):
             raise NotImplementedError
         
         z0, x0, z, xBC, dt = in_proj_split(u, self)
-        
+
         batch, seqlen, dim = u.shape
         if not self.h5_init:
             if "erf" in self.experiments.keys():
