@@ -159,12 +159,9 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
         self.experiments = experiments
 
         # load head mask for scaling
-        self.register_buffer('upi_mask', torch.ones(self.nheads), persistent=True)
+        self.register_buffer('upi_mask', torch.ones(self.nheads), persistent=True).to(dtype=dtype)
         if "upi" in self.experiments.keys():
-            # self.upi_mask = torch.load(self.experiments["upi"])[layer_idx].to(device) # (nheads,)
-            self.upi_mask = torch.load(self.experiments["upi"])[layer_idx]
-            print("Upi mask initialized, printing for sanity check...")
-            print(self.upi_mask)
+            self.upi_mask = torch.load(self.experiments["upi"])[layer_idx].to(dtype=dtype) # (nheads,)
 
 
         self.h5_init = True
@@ -225,16 +222,13 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
             if "upi" in self.experiments.keys():
                 # B & C are grouped and shared across heads
                 # A & dt are for each head, so we should scale them to get head-wise control
-                print("Using fully fused upi...")
                 zxbc, dt = torch.split(
                     zxbcdt,
                     [2 * (d_mlp + self.d_ssm + self.ngroups * self.d_state), self.nheads],
                     dim=-1
                 )
                 scale = scale_dt(self.upi_mask, dt, self.dt_bias)
-                print(dt.view(-1)[-1])
                 dt = dt * scale
-                print(dt.view(-1)[-1])
                 zxbcdt = torch.cat([zxbc, dt], dim=-1)
 
             out = mamba_split_conv1d_scan_combined(
@@ -337,10 +331,7 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
 
             if "upi" in self.experiments.keys():
                 # Precompute scaled delta and disable later ones
-                print("Using chunked scan combined upi...")
-                print(dt.view(-1)[-1])
                 dt = F.softplus(dt + self.dt_bias) / self.upi_mask
-                print(dt.view(-1)[-1])
 
             y = mamba_chunk_scan_combined(
                 rearrange(x, "b l (h p) -> b l h p", p=self.headdim),
