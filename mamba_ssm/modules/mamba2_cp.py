@@ -460,7 +460,10 @@ def scan(
 
     if "upi" in mamba2.experiments.keys():
         # Precompute scaled delta and disable later ones
+        print("Using Mamba-cp upi, printing scaled dt for sanity check...")
+        print(dt.view(-1)[-1], mamba2.dt_bias[-1])
         dt = F.softplus(dt + mamba2.dt_bias) / mamba2.upi_mask
+        print(dt.view(-1)[-1])
 
     y = chunk_scan_combined_impl(
         rearrange(x, "b l (h p) -> b l h p", p=mamba2.headdim),
