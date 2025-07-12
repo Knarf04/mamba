@@ -561,7 +561,6 @@ class Mamba2CP(Mamba2):
         self.cp_mamba_impl = cp_mamba_impl
         self.cp_impl_fn = CP_MAMBA_IMPLS[self.cp_mamba_impl]
         super().__init__(*args, **kwargs)
-        print("inside init1", self.upi_mask)
 
     def forward(
         self, u, seqlen=None, seq_idx=None, cu_seqlens=None, inference_params=None
@@ -575,6 +574,10 @@ class Mamba2CP(Mamba2):
         if inference_params is not None:
             raise NotImplementedError
         
+        if "upi" in self.experiments.keys() and torch.sum(self.upi_mask) == 0:
+            # self.upi_mask.copy_(torch.load(self.experiments["upi"])[self.layer_idx].to(dtype=torch.bfloat16)) # (nheads,)
+            self.upi_mask.copy_(torch.load("/gpfs/hshen/UPI_configs/upi_mask_10.pt")[self.layer_idx].to(dtype=torch.bfloat16)) # (nheads,)
+
         z0, x0, z, xBC, dt = in_proj_split(u, self)
 
         batch, seqlen, dim = u.shape
