@@ -460,11 +460,9 @@ def scan(
 
     if "upi" in mamba2.experiments.keys():
         # Precompute scaled delta and disable later ones
-        dt = F.softplus(dt + mamba2.dt_bias)
-        print(dt.shape, mamba2.upi_mask.shape)
-        print(mamba2.upi_mask)
-        dt = torch.div(dt, mamba2.upi_mask[None, None, :])
-        # dt = F.softplus(dt + mamba2.dt_bias) / mamba2.upi_mask
+        # dt = F.softplus(dt + mamba2.dt_bias)
+        # dt = torch.div(dt, mamba2.upi_mask[None, None, :])
+        dt = F.softplus(dt + mamba2.dt_bias) / mamba2.upi_mask
 
     y = chunk_scan_combined_impl(
         rearrange(x, "b l (h p) -> b l h p", p=mamba2.headdim),
