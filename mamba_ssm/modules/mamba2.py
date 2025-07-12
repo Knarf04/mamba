@@ -157,13 +157,14 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                                               **factory_kwargs)
 
         self.experiments = experiments
+        self.enable_experiments(**factory_kwargs)
 
-        # load head mask for scaling
+    # After loading checkpoint, the initilialized values would be wiped out...
+    def enable_experiments(self, device, dtype):
         self.register_buffer('upi_mask', torch.ones(self.nheads).to(dtype=dtype), persistent=True)
         if "upi" in self.experiments.keys():
-            self.upi_mask.copy_(torch.load(self.experiments["upi"])[layer_idx].to(device=device, dtype=dtype)) # (nheads,)
-        print(self.upi_mask)
-        
+            self.upi_mask.copy_(torch.load(self.experiments["upi"])self.layer_idx].to(device=device, dtype=dtype)) # (nheads,)
+
         self.h5_init = True
         self.erf_rec = True
         if "erf" in self.experiments.keys():

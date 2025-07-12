@@ -593,7 +593,6 @@ class Mamba2CP(Mamba2):
             self.h5_init = True
 
         xBC = conv_cp(xBC, self, self.cp_mesh, seq_idx)
-        print("inside forward", self.upi_mask)
 
         y = scan(
             self.cp_impl_fn,
