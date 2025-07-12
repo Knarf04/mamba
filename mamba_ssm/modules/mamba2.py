@@ -163,7 +163,7 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
     def enable_experiments(self, device, dtype):
         self.register_buffer('upi_mask', torch.ones(self.nheads).to(dtype=dtype), persistent=True)
         if "upi" in self.experiments.keys():
-            self.upi_mask.copy_(torch.load(self.experiments["upi"])self.layer_idx].to(device=device, dtype=dtype)) # (nheads,)
+            self.upi_mask.copy_(torch.load(self.experiments["upi"])[self.layer_idx].to(device=device, dtype=dtype)) # (nheads,)
 
         self.h5_init = True
         self.erf_rec = True
