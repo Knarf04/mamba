@@ -561,6 +561,7 @@ class Mamba2CP(Mamba2):
         self.cp_mamba_impl = cp_mamba_impl
         self.cp_impl_fn = CP_MAMBA_IMPLS[self.cp_mamba_impl]
         super().__init__(*args, **kwargs)
+        print("inside init1", self.upi_mask)
 
     def forward(
         self, u, seqlen=None, seq_idx=None, cu_seqlens=None, inference_params=None
@@ -592,6 +593,8 @@ class Mamba2CP(Mamba2):
             self.h5_init = True
 
         xBC = conv_cp(xBC, self, self.cp_mesh, seq_idx)
+        print("inside forward", self.upi_mask)
+
         y = scan(
             self.cp_impl_fn,
             xBC,
