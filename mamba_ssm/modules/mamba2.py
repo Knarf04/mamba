@@ -159,7 +159,7 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
         self.experiments = experiments
 
         # load head mask for scaling
-        self.register_buffer('upi_mask', torch.ones(self.nheads), persistent=True).to(dtype=dtype)
+        self.register_buffer('upi_mask', torch.ones(self.nheads).to(dtype=dtype), persistent=True)
         if "upi" in self.experiments.keys():
             self.upi_mask = torch.load(self.experiments["upi"])[layer_idx].to(dtype=dtype) # (nheads,)
 
