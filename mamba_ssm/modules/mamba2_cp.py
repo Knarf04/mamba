@@ -460,10 +460,10 @@ def scan(
 
     if "upi" in mamba2.experiments.keys():
         # Precompute scaled delta and disable later ones
-        print("Using Mamba-cp upi, printing scaled dt for sanity check...")
         dt = F.softplus(dt + mamba2.dt_bias)
         print(dt.shape, mamba2.upi_mask.shape)
-        dt = dt / mamba2.upi_mask[None, None, :]
+        print(mamba2.upi_mask)
+        dt = torch.div(dt, mamba2.upi_mask[None, None, :])
         print("4.", dt.reshape(-1)[-1])
         # dt = F.softplus(dt + mamba2.dt_bias) / mamba2.upi_mask
 
