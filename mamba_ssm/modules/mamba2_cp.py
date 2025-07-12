@@ -464,7 +464,6 @@ def scan(
         print(dt.shape, mamba2.upi_mask.shape)
         print(mamba2.upi_mask)
         dt = torch.div(dt, mamba2.upi_mask[None, None, :])
-        print("4.", dt.reshape(-1)[-1])
         # dt = F.softplus(dt + mamba2.dt_bias) / mamba2.upi_mask
 
     y = chunk_scan_combined_impl(
