@@ -180,22 +180,18 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                 persistent=False
             ) # (nheads,)
 
-    def load_state_dict(self, state_dict, strict=True):
+    def enable_experiments(self):
         """
         Override so that after loading the checkpoint’s state_dict (which
         may clobber the persistent buffers), we restore any experiment flags
         by copying from our non-persistent buffers.
         """
-        res = super().load_state_dict(state_dict, strict)
-
         # For each “official” buffer, if there’s a _buffer override, copy it back
-        for name in ('upi_mask', ):
+        for name in ['upi_mask']:
             buf_name = f'{name}_buffer'
             if buf_name in self._buffers:
                 print(buf_name)
                 getattr(self, name).copy_(self._buffers[buf_name])
-
-        return res
 
     def forward(self, u, seqlen=None, seq_idx=None, cu_seqlens=None, inference_params=None):
         """
