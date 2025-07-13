@@ -170,7 +170,7 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
         self.experiments = experiments
         if "upi" in experiments.keys():
             mask = torch.load(experiments["upi"])[self.layer_idx].to(device=device, dtype=dtype)
-            self.upi_mask._copy(mask)
+            self.upi_mask.copy_(mask) # (nheads,)
 
     def forward(self, u, seqlen=None, seq_idx=None, cu_seqlens=None, inference_params=None):
         """
