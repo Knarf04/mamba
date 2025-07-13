@@ -191,7 +191,8 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
             buf_name = f'{name}_buffer'
             if buf_name in self._buffers:
                 getattr(self, name).copy_(self._buffers[buf_name])
-        print(self.upi_mask)
+        print("upi_mask_buffer:", self.upi_mask_buffer)
+        print("upi_mask:", self.upi_mask)
 
     def forward(self, u, seqlen=None, seq_idx=None, cu_seqlens=None, inference_params=None):
         """
