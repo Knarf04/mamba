@@ -174,11 +174,15 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
     # Load experiment related params into buffer
     def load_experiments(self, experiments, device, dtype):
         if "upi" in experiments.keys():
+            mask = torch.load(experiments["upi"])[self.layer_idx].to(device=device, dtype=dtype)
+            print("loaded mask:", mask)
             self.register_buffer(
                 'upi_mask_buffer', 
-                torch.load(experiments["upi"])[self.layer_idx].to(device=device, dtype=dtype), 
+                mask, 
                 persistent=False
             ) # (nheads,)
+        print("loaded upi_mask_buffer:", self.upi_mask_buffer)
+
 
     def enable_experiments(self):
         """
