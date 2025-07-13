@@ -10,17 +10,14 @@ def scale_dt(scale_mask, dt, dt_bias):
     y = torch.expm1(t).clamp_min(1e-6)
     return (torch.log(y) - dt_bias) / dt
 
+# Easiest way to load/modify the mask: just change the state dict
 def add_upi_to_ckpt(ckpt_dir, upi_dir, save_dir):
     state_dict = torch.load(ckpt_dir)
     upi_mask_dict = torch.load(upi_dir)
     for i in range(32):
         if i not in (9, 18, 27):
             state_dict['model_state'][f'backbone.layers.{i}.mixer.upi_mask'] = upi_mask_dict[i].to(torch.bfloat16)
-    print(state_dict)
     torch.save(state_dict, save_dir)
-
-    state_dict_new = torch.load(save_dir)
-    print(state_dict_new)
 
 if __name__ == "__main__":
     add_upi_to_ckpt(

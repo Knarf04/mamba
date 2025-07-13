@@ -168,34 +168,9 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
         self.register_buffer('upi_mask', torch.ones(self.nheads).to(device=device, dtype=dtype), persistent=True)
         
         self.experiments = experiments
-        self.load_experiments(self.experiments, **factory_kwargs)
-
-    # After loading checkpoint, the initilialized values would be wiped out...
-    # Load experiment related params into buffer
-    def load_experiments(self, experiments, device, dtype):
         if "upi" in experiments.keys():
             mask = torch.load(experiments["upi"])[self.layer_idx].to(device=device, dtype=dtype)
-            print("loaded mask:", mask)
-            self.register_buffer(
-                'upi_mask_buffer', 
-                mask, 
-                persistent=False
-            ) # (nheads,)
-        print("loaded upi_mask_buffer:", self.upi_mask_buffer)
-
-    def enable_experiments(self):
-        """
-        Override so that after loading the checkpoint’s state_dict (which
-        may clobber the persistent buffers), we restore any experiment flags
-        by copying from our non-persistent buffers.
-        """
-        # For each “official” buffer, if there’s a _buffer override, copy it back
-        for name in ['upi_mask']:
-            buf_name = f'{name}_buffer'
-            if buf_name in self._buffers:
-                getattr(self, name).copy_(self._buffers[buf_name])
-        print("upi_mask_buffer:", self.upi_mask_buffer)
-        print("upi_mask:", self.upi_mask)
+            self.upi_mask._copy(mask)
 
     def forward(self, u, seqlen=None, seq_idx=None, cu_seqlens=None, inference_params=None):
         """

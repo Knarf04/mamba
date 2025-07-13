@@ -325,11 +325,6 @@ class MambaLMHeadModel(nn.Module, GenerationMixin):
             batch_size, max_seqlen, dtype=dtype, **kwargs
         )
 
-    def enable_experiments(self):
-        for block in self.backbone.layers:
-            if isinstance(block.mixer, Mamba2):
-                block.mixer.enable_experiments()
-
     def forward(
         self,
         input_ids,
