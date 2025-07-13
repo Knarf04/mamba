@@ -167,7 +167,8 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
 
         self.register_buffer('upi_mask', torch.ones(self.nheads).to(device=device, dtype=dtype), persistent=True)
         
-        self.load_experiments(experiments, **factory_kwargs)
+        self.experiments = experiments
+        self.load_experiments(self.experiments, **factory_kwargs)
 
     # After loading checkpoint, the initilialized values would be wiped out...
     # Load experiment related params into buffer
