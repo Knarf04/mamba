@@ -192,6 +192,7 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
         for name in ('upi_mask'):
             buf_name = f'{name}_buffer'
             if buf_name in self._buffers:
+                print(buf_name)
                 getattr(self, name).copy_(self._buffers[buf_name])
 
         return res
