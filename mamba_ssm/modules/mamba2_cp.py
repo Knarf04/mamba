@@ -463,6 +463,7 @@ def scan(
         # dt = F.softplus(dt + mamba2.dt_bias)
         # dt = torch.div(dt, mamba2.upi_mask[None, None, :])
         dt = F.softplus(dt + mamba2.dt_bias) / mamba2.upi_mask
+        print(mamba2.upi_mask, dt.reshape(-1)[-1])
 
     y = chunk_scan_combined_impl(
         rearrange(x, "b l (h p) -> b l h p", p=mamba2.headdim),
@@ -571,10 +572,6 @@ class Mamba2CP(Mamba2):
             raise NotImplementedError
         if inference_params is not None:
             raise NotImplementedError
-        
-        if "upi" in self.experiments.keys() and torch.sum(self.upi_mask) == 0:
-            # self.upi_mask.copy_(torch.load(self.experiments["upi"])[self.layer_idx].to(dtype=torch.bfloat16)) # (nheads,)
-            self.upi_mask.copy_(torch.load("/gpfs/hshen/UPI_configs/upi_mask_10.pt")[self.layer_idx].to(dtype=torch.bfloat16)) # (nheads,)
 
         z0, x0, z, xBC, dt = in_proj_split(u, self)
 

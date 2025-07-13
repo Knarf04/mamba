@@ -156,23 +156,44 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                                               process_group=self.process_group, sequence_parallel=self.sequence_parallel,
                                               **factory_kwargs)
 
-        self.experiments = experiments
-        self.enable_experiments(**factory_kwargs)
-
-    # After loading checkpoint, the initilialized values would be wiped out...
-    def enable_experiments(self, device, dtype):
-        self.register_buffer('upi_mask', torch.ones(self.nheads).to(dtype=dtype), persistent=True)
-        if "upi" in self.experiments.keys():
-            self.upi_mask.copy_(torch.load(self.experiments["upi"])[self.layer_idx].to(device=device, dtype=dtype)) # (nheads,)
-
         self.h5_init = True
         self.erf_rec = True
-        if "erf" in self.experiments.keys():
+        if "erf" in experiments.keys():
             self.h5_init = False
         
         self.logits_rec = False
-        if "logits" in self.experiments.keys():
+        if "logits" in experiments.keys():
             self.logits_rec = True
+
+        self.register_buffer('upi_mask', torch.ones(self.nheads).to(device=device, dtype=dtype), persistent=True)
+        
+        self.load_experiments(experiments, **factory_kwargs)
+
+    # After loading checkpoint, the initilialized values would be wiped out...
+    # Load experiment related params into buffer
+    def load_experiments(self, experiments, device, dtype):
+        if "upi" in experiments.keys():
+            self.register_buffer(
+                'upi_mask_buffer', 
+                torch.load(experiments["upi"])[self.layer_idx].to(device=device, dtype=dtype), 
+                persistent=False
+            ) # (nheads,)
+
+    def load_state_dict(self, state_dict, strict=True):
+        """
+        Override so that after loading the checkpoint’s state_dict (which
+        may clobber the persistent buffers), we restore any experiment flags
+        by copying from our non-persistent buffers.
+        """
+        res = super().load_state_dict(state_dict, strict)
+
+        # For each “official” buffer, if there’s a _buffer override, copy it back
+        for name in ('upi_mask'):
+            buf_name = f'{name}_buffer'
+            if buf_name in self._buffers:
+                getattr(self, name).copy_(self._buffers[buf_name])
+
+        return res
 
     def forward(self, u, seqlen=None, seq_idx=None, cu_seqlens=None, inference_params=None):
         """
