@@ -21,7 +21,7 @@ def add_upi_to_ckpt(ckpt_dir, upi_dir, save_dir):
 
 if __name__ == "__main__":
     add_upi_to_ckpt(
-        ckpt_dir="/gpfs/hshen/bamba_upi_tune/bambav2_base.pth", 
+        ckpt_dir="/gpfs/davis/granites/bamba-merged/consolidated_ckpt.pth", 
         upi_dir="/gpfs/hshen/UPI_configs/upi_mask_10.pt", 
         save_dir="/gpfs/hshen/bamba_upi_tune/bambav2_base.pth",
     )
