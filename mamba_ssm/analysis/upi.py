@@ -19,6 +19,9 @@ def add_upi_to_ckpt(ckpt_dir, upi_dir, save_dir):
     print(state_dict)
     torch.save(state_dict, save_dir)
 
+    state_dict_new = torch.load(save_dir)
+    print(state_dict_new)
+
 if __name__ == "__main__":
     add_upi_to_ckpt(
         ckpt_dir="/gpfs/davis/granites/bamba-merged/consolidated_ckpt.pth", 
