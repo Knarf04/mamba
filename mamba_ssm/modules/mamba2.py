@@ -183,7 +183,6 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
             ) # (nheads,)
         print("loaded upi_mask_buffer:", self.upi_mask_buffer)
 
-
     def enable_experiments(self):
         """
         Override so that after loading the checkpoint’s state_dict (which
