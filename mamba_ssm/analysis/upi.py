@@ -12,7 +12,11 @@ def scale_dt(scale_mask, dt, dt_bias):
 
 def add_upi_to_ckpt(ckpt_dir, upi_dir, save_dir):
     state_dict = torch.load(ckpt_dir)
-    print(state_dict)
+    upi_mask_dict = torch.load(upi_dir)
+    for i in range(32):
+        if i not in (9, 18, 27):
+            state_dict['model_state'][f'backbone.layers.{i}.mixer.upi_mask'] = upi_mask_dict[i].to(torch.bfloat16)
+    torch.save(state_dict, save_dir)
 
 if __name__ == "__main__":
     add_upi_to_ckpt(
