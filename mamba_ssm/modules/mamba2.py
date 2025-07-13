@@ -189,7 +189,7 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
         res = super().load_state_dict(state_dict, strict)
 
         # For each “official” buffer, if there’s a _buffer override, copy it back
-        for name in ('upi_mask'):
+        for name in ('upi_mask', ):
             buf_name = f'{name}_buffer'
             if buf_name in self._buffers:
                 print(buf_name)
