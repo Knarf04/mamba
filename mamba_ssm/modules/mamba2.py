@@ -328,9 +328,13 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                     torch.save(curr_state, logits_file)
                     self.logits_rec = False
 
+            dt_bias = self.dt_bias
+            dt_softplus = True
             if "upi" in self.experiments.keys():
                 # Precompute scaled delta and disable later ones
                 dt = F.softplus(dt + self.dt_bias) / self.upi_mask
+                dt_bias = None
+                dt_softplus = False
 
             y = mamba_chunk_scan_combined(
                 rearrange(x, "b l (h p) -> b l h p", p=self.headdim),
@@ -341,8 +345,8 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                 chunk_size=self.chunk_size,
                 D=rearrange(self.D, "(h p) -> h p", p=self.headdim) if self.D_has_hdim else self.D,
                 z=rearrange(z, "b l (h p) -> b l h p", p=self.headdim) if not self.rmsnorm else None,
-                dt_bias=None, #self.dt_bias,
-                dt_softplus=False, # True,
+                dt_bias=dt_bias,
+                dt_softplus=dt_softplus,
                 seq_idx=seq_idx,
                 cu_seqlens=cu_seqlens,
                 **dt_limit_kwargs,

@@ -457,10 +457,14 @@ def scan(
                 batch_slice = batch
             dset.resize(old+batch_slice, axis=0)
             dset[old:old+batch_slice] = mmd[:batch_slice].cpu().numpy()
-
+    
+    dt_bias = mamba2.dt_bias
+    dt_softplus = True
     if "upi" in mamba2.experiments.keys():
         # Precompute scaled delta and disable later ones
         dt = F.softplus(dt + mamba2.dt_bias) / mamba2.upi_mask
+        dt_bias = None
+        dt_softplus = False
 
     y = chunk_scan_combined_impl(
         rearrange(x, "b l (h p) -> b l h p", p=mamba2.headdim),
@@ -475,8 +479,8 @@ def scan(
         z=rearrange(z, "b l (h p) -> b l h p", p=mamba2.headdim)
         if not mamba2.rmsnorm
         else None,
-        dt_bias=None, #mamba2.dt_bias,
-        dt_softplus=False, #True,
+        dt_bias=dt_bias,
+        dt_softplus=dt_softplus,
         seq_idx=seq_idx,
         cu_seqlens=None,
         return_final_states=False,
