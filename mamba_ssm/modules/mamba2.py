@@ -226,8 +226,7 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                     [2 * (d_mlp + self.d_ssm + self.ngroups * self.d_state), self.nheads],
                     dim=-1
                 )
-                scale = scale_dt(self.upi_mask, dt, self.dt_bias)
-                dt = dt * scale
+                dt = scale_dt(self.upi_mask, dt, self.dt_bias)
                 zxbcdt = torch.cat([zxbc, dt], dim=-1)
 
             out = mamba_split_conv1d_scan_combined(
@@ -290,7 +289,7 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                 ).transpose(1, 2)
             x, B, C = torch.split(xBC, [self.d_ssm, self.ngroups * self.d_state, self.ngroups * self.d_state], dim=-1)
             
-            if not self.erf_rec and "erf" in self.experiments.keys():
+            if "erf" in self.experiments.keys():
                 mmd = mmd_ssd_full_chunk(
                     dt, 
                     A, 
@@ -301,18 +300,6 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                     dt_limit=(0.0, float("inf"))
                     )
 
-                with h5py.File(self.experiments["erf"], 'a') as f:
-                    dset = f[f"mmd_{self.layer_idx}_{seqlen}"]
-                    old = dset.shape[0]
-                    max_rec = self.experiments["max_rec"]
-                    if old + batch > max_rec:
-                        batch_slice = max_rec - old
-                        self.erf_rec = False
-                    else:
-                        batch_slice = batch
-                    dset.resize(old+batch_slice, axis=0)
-                    dset[old:old+batch_slice] = mmd[:batch_slice].cpu().numpy()
-                
             if self.logits_rec and "logits" in self.experiments.keys(): # Save one set of logits for analysis
                 with torch.no_grad():
                     curr_state = {}
@@ -405,7 +392,7 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
             with torch.no_grad():
                 # B & C are grouped and shared across heads
                 # A & dt are for each head, so we should scale them to get head-wise control
-                dt *= scale_dt(self.upi_mask, dt, self.dt_bias)
+                dt = scale_dt(self.upi_mask, dt, self.dt_bias)
 
         # SSM step
         if selective_state_update is None:

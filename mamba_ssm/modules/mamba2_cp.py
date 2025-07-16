@@ -27,7 +27,6 @@ except ImportError:
 
 import h5py
 from mamba_ssm.analysis.mmd import mmd_ssd_full_chunk
-from mamba_ssm.analysis.upi import scale_dt
 
 class CausalPassingFn(torch.autograd.Function):
     """
@@ -435,7 +434,8 @@ def scan(
     A = -torch.exp(mamba2.A_log.float())  # (nheads) or (d_inner, d_state)
 
     batch, seqlen, _ = x.shape
-    if not mamba2.erf_rec and "erf" in mamba2.experiments.keys():
+
+    if "erf" in mamba2.experiments.keys():
         mmd = mmd_ssd_full_chunk(
             dt, 
             A, 
@@ -445,18 +445,7 @@ def scan(
             dt_softplus=True, 
             dt_limit=(0.0, float("inf"))
             )
-
-        with h5py.File(mamba2.experiments["erf"], 'a') as f:
-            dset = f[f"mmd_{mamba2.layer_idx}_{seqlen}"]
-            old = dset.shape[0]
-            max_rec = mamba2.experiments["max_rec"]
-            if old + batch > max_rec:
-                batch_slice = max_rec - old
-                mamba2.erf_rec = False
-            else:
-                batch_slice = batch
-            dset.resize(old+batch_slice, axis=0)
-            dset[old:old+batch_slice] = mmd[:batch_slice].cpu().numpy()
+        experiments_out["mmd"] = mmd
     
     dt_bias = mamba2.dt_bias
     dt_softplus = True
@@ -488,7 +477,7 @@ def scan(
         cp_mesh=cp_mesh,
     )
     y = rearrange(y, "b l h p -> b l (h p)")
-    return y
+    return y, mmd
 
 
 class _Mamba2Ref(Mamba2):
@@ -575,24 +564,9 @@ class Mamba2CP(Mamba2):
             raise NotImplementedError
 
         z0, x0, z, xBC, dt = in_proj_split(u, self)
-
-        batch, seqlen, dim = u.shape
-        if not self.h5_init:
-            if "erf" in self.experiments.keys():
-                erf_dataset_name = f"mmd_{self.layer_idx}_{seqlen}"
-                with h5py.File(self.experiments["erf"], "a") as f:
-                    if erf_dataset_name not in f:
-                        f.create_dataset(
-                            erf_dataset_name,
-                            shape=(0, self.nheads, seqlen),          
-                            maxshape=(None, self.nheads, seqlen),    
-                            dtype="float32",
-                            chunks=(batch, self.nheads, seqlen),  
-                        )
-            self.h5_init = True
-
         xBC = conv_cp(xBC, self, self.cp_mesh, seq_idx)
 
+        experiments_out["mmd"]
         y = scan(
             self.cp_impl_fn,
             xBC,
