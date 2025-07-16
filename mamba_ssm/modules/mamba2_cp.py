@@ -477,7 +477,7 @@ def scan(
         cp_mesh=cp_mesh,
     )
     y = rearrange(y, "b l h p -> b l (h p)")
-    return y, mmd
+    return y# , mmd
 
 
 class _Mamba2Ref(Mamba2):
