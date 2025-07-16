@@ -3,7 +3,7 @@ import argparse
 import torch
 import torch.nn.functional as F
 
-# dt *= scale_dt(self.upi_mask, dt, self.dt_bias)
+# dt = scale_dt(self.upi_mask, dt, self.dt_bias)
 def scale_dt(scale_mask, dt, dt_bias):
     assert (scale_mask.dim() == 0) or (
         scale_mask.dim() == 1 and scale_mask.size(0) == dt_bias.size(0)

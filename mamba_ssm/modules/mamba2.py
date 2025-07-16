@@ -156,21 +156,21 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                                               process_group=self.process_group, sequence_parallel=self.sequence_parallel,
                                               **factory_kwargs)
 
-        self.h5_init = True
-        self.erf_rec = True
-        if "erf" in experiments.keys():
-            self.h5_init = False
-        
-        self.logits_rec = False
-        if "logits" in experiments.keys():
-            self.logits_rec = True
-
         self.register_buffer('upi_mask', torch.ones(self.nheads).to(device=device, dtype=dtype), persistent=True)
         
         self.experiments = experiments
-        if "upi" in experiments.keys():
-            mask = torch.load(experiments["upi"])[self.layer_idx].to(device=device, dtype=dtype)
+        if "upi" in self.experiments.keys():
+            mask = torch.load(self.experiments["upi"])[self.layer_idx].to(device=device, dtype=dtype)
             self.upi_mask.copy_(mask) # (nheads,)
+
+        self.h5_init = True
+        self.erf_rec = True
+        if "erf" in self.experiments.keys():
+            self.h5_init = False
+        
+        self.logits_rec = False
+        if "logits" in self.experiments.keys():
+            self.logits_rec = True
 
     def forward(self, u, seqlen=None, seq_idx=None, cu_seqlens=None, inference_params=None):
         """

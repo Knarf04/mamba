@@ -445,7 +445,7 @@ def scan(
             dt_softplus=True, 
             dt_limit=(0.0, float("inf"))
             )
-        experiments_out["mmd"] = mmd
+        # experiments_out["mmd"] = mmd
     
     dt_bias = mamba2.dt_bias
     dt_softplus = True
@@ -566,7 +566,6 @@ class Mamba2CP(Mamba2):
         z0, x0, z, xBC, dt = in_proj_split(u, self)
         xBC = conv_cp(xBC, self, self.cp_mesh, seq_idx)
 
-        experiments_out["mmd"]
         y = scan(
             self.cp_impl_fn,
             xBC,
