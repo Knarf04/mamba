@@ -159,8 +159,10 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
         self.experiments = experiments
         if "upi" in self.experiments.keys():
             self.register_buffer('upi_mask', torch.ones(self.nheads).to(device=device, dtype=dtype), persistent=True)
-            mask = torch.load(self.experiments["upi"])[self.layer_idx].to(device=device, dtype=dtype)
-            self.upi_mask.copy_(mask) # (nheads,)
+            upi_mask_file = self.experiments["upi"]
+            if os.path.isfile(upi_mask_file):
+                mask = torch.load(upi_mask_file)[self.layer_idx].to(device=device, dtype=dtype)
+                self.upi_mask.copy_(mask) # (nheads,)
 
     def forward(self, u, seqlen=None, seq_idx=None, cu_seqlens=None, inference_params=None):
         """
