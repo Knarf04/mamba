@@ -435,18 +435,33 @@ def scan(
 
     batch, seqlen, _ = x.shape
 
+    experiment_out = {}
+
     if "erf" in mamba2.experiments.keys():
-        mmd = mmd_ssd_full_chunk(
-            dt, 
-            A, 
-            B.view(batch, seqlen, mamba2.ngroups, -1), 
-            C.view(batch, seqlen, mamba2.ngroups, -1), 
-            dt_bias=mamba2.dt_bias, 
-            dt_softplus=True, 
-            dt_limit=(0.0, float("inf"))
+        with torch.no_grad():
+            mmd = mmd_ssd_full_chunk(
+                dt, 
+                A, 
+                B.view(batch, seqlen, mamba2.ngroups, -1), 
+                C.view(batch, seqlen, mamba2.ngroups, -1), 
+                dt_bias=mamba2.dt_bias, 
+                dt_softplus=True, 
+                dt_limit=(0.0, float("inf"))
             )
-        # experiments_out["mmd"] = mmd
+        experiment_out["mmd"] = mmd
     
+    if "logits" in mamba2.experiments.keys(): 
+        with torch.no_grad():
+            logits = {}
+            logits['x'] = rearrange(x, "b l (h p) -> b l h p", p=mamba2.headdim).cpu()
+            logits['dt'] = dt.cpu()
+            logits['A'] = A.cpu()
+            logits['B'] = rearrange(B, "b l (g n) -> b l g n", g=mamba2.ngroups).cpu()
+            logits['C'] = rearrange(C, "b l (g n) -> b l g n", g=mamba2.ngroups).cpu()
+            logits['D'] = mamba2.D.cpu()
+            logits['dt_bias'] = mamba2.dt_bias.cpu()
+        experiment_out['logits'] = logits
+
     dt_bias = mamba2.dt_bias
     dt_softplus = True
     if "upi" in mamba2.experiments.keys():
@@ -477,7 +492,7 @@ def scan(
         cp_mesh=cp_mesh,
     )
     y = rearrange(y, "b l h p -> b l (h p)")
-    return y# , mmd
+    return y, experiment_out
 
 
 class _Mamba2Ref(Mamba2):
@@ -565,8 +580,8 @@ class Mamba2CP(Mamba2):
 
         z0, x0, z, xBC, dt = in_proj_split(u, self)
         xBC = conv_cp(xBC, self, self.cp_mesh, seq_idx)
-
-        y = scan(
+        
+        y, experiment_out = scan(
             self.cp_impl_fn,
             xBC,
             dt,
@@ -589,7 +604,11 @@ class Mamba2CP(Mamba2):
         if d_nonssm > 0:
             y = torch.cat([F.silu(z0) * x0, y], dim=-1)
         out = self.out_proj(y)
-        return out
+        
+        if len(experiment_out) == 0:
+            return out
+        else:
+            return out, experiment_out
 
 
 class MHACP(MHA):

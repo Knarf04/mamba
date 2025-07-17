@@ -155,22 +155,12 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
             self.out_proj = RowParallelLinear(self.d_inner * self.world_size, self.d_model, bias=bias,
                                               process_group=self.process_group, sequence_parallel=self.sequence_parallel,
                                               **factory_kwargs)
-
-        self.register_buffer('upi_mask', torch.ones(self.nheads).to(device=device, dtype=dtype), persistent=True)
         
         self.experiments = experiments
         if "upi" in self.experiments.keys():
+            self.register_buffer('upi_mask', torch.ones(self.nheads).to(device=device, dtype=dtype), persistent=True)
             mask = torch.load(self.experiments["upi"])[self.layer_idx].to(device=device, dtype=dtype)
             self.upi_mask.copy_(mask) # (nheads,)
-
-        self.h5_init = True
-        self.erf_rec = True
-        if "erf" in self.experiments.keys():
-            self.h5_init = False
-        
-        self.logits_rec = False
-        if "logits" in self.experiments.keys():
-            self.logits_rec = True
 
     def forward(self, u, seqlen=None, seq_idx=None, cu_seqlens=None, inference_params=None):
         """
@@ -187,19 +177,7 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
             batch_seqlen, dim = u.shape
             batch = batch_seqlen // seqlen
 
-        if not self.h5_init:
-            if "erf" in self.experiments.keys():
-                erf_dataset_name = f"mmd_{self.layer_idx}_{seqlen}"
-                with h5py.File(self.experiments["erf"], "a") as f:
-                    if erf_dataset_name not in f:
-                        f.create_dataset(
-                            erf_dataset_name,
-                            shape=(0, self.nheads, seqlen),          
-                            maxshape=(None, self.nheads, seqlen),    
-                            dtype="float32",
-                            chunks=(batch, self.nheads, seqlen),  
-                        )
-            self.h5_init = True
+        experiment_out = {}
 
         conv_state, ssm_state = None, None
         if inference_params is not None:
@@ -217,7 +195,11 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
         # If the model is loaded in fp16, without the .float() here, A might be -inf
         A = -torch.exp(self.A_log.float())  # (nheads) or (d_inner, d_state)
         dt_limit_kwargs = {} if self.dt_limit == (0.0, float("inf")) else dict(dt_limit=self.dt_limit)
-        if self.use_mem_eff_path and inference_params is None:     
+        
+        # Record ERF and logits only when using the less fused kernel
+        if self.use_mem_eff_path and inference_params is None \
+            and ("erf" not in self.experiments.keys()) \
+            and ("logits" not in self.experiments.keys()):     
             if "upi" in self.experiments.keys():
                 # B & C are grouped and shared across heads
                 # A & dt are for each head, so we should scale them to get head-wise control
@@ -290,30 +272,29 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
             x, B, C = torch.split(xBC, [self.d_ssm, self.ngroups * self.d_state, self.ngroups * self.d_state], dim=-1)
             
             if "erf" in self.experiments.keys():
-                mmd = mmd_ssd_full_chunk(
-                    dt, 
-                    A, 
-                    B.view(batch, seqlen, self.ngroups, -1), 
-                    C.view(batch, seqlen, self.ngroups, -1), 
-                    dt_bias=self.dt_bias, 
-                    dt_softplus=True, 
-                    dt_limit=(0.0, float("inf"))
-                    )
-
-            if self.logits_rec and "logits" in self.experiments.keys(): # Save one set of logits for analysis
                 with torch.no_grad():
-                    curr_state = {}
-                    curr_state['x'] = rearrange(x, "b l (h p) -> b l h p", p=self.headdim).cpu()
-                    curr_state['dt'] = dt.cpu()
-                    curr_state['A'] = A.cpu()
-                    curr_state['B'] = rearrange(B, "b l (g n) -> b l g n", g=self.ngroups).cpu()
-                    curr_state['C'] = rearrange(C, "b l (g n) -> b l g n", g=self.ngroups).cpu()
-                    curr_state['D'] = self.D.cpu()
-                    curr_state['dt_bias'] = self.dt_bias.cpu()
+                    mmd = mmd_ssd_full_chunk(
+                        dt, 
+                        A, 
+                        B.view(batch, seqlen, self.ngroups, -1), 
+                        C.view(batch, seqlen, self.ngroups, -1), 
+                        dt_bias=self.dt_bias, 
+                        dt_softplus=True, 
+                        dt_limit=(0.0, float("inf"))
+                    )
+                experiment_out['mmd'] = mmd
 
-                    logits_file = os.path.join(self.experiments["logits"], f'curr_state_{seqlen}_{self.layer_idx}.pt')
-                    torch.save(curr_state, logits_file)
-                    self.logits_rec = False
+            if "logits" in self.experiments.keys(): 
+                with torch.no_grad():
+                    logits = {}
+                    logits['x'] = rearrange(x, "b l (h p) -> b l h p", p=self.headdim).cpu()
+                    logits['dt'] = dt.cpu()
+                    logits['A'] = A.cpu()
+                    logits['B'] = rearrange(B, "b l (g n) -> b l g n", g=self.ngroups).cpu()
+                    logits['C'] = rearrange(C, "b l (g n) -> b l g n", g=self.ngroups).cpu()
+                    logits['D'] = self.D.cpu()
+                    logits['dt_bias'] = self.dt_bias.cpu()
+                experiment_out['logits'] = logits
 
             dt_bias = self.dt_bias
             dt_softplus = True
@@ -355,7 +336,11 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
             if seqlen_og is not None:
                 y = rearrange(y, "b l d -> (b l) d")
             out = self.out_proj(y)
-        return out
+        
+        if len(experiment_out) == 0:
+            return out
+        else:
+            return out, experiment_out
 
     def step(self, hidden_states, conv_state, ssm_state):
         dtype = hidden_states.dtype

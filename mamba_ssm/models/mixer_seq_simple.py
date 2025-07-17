@@ -227,6 +227,7 @@ class MixerModel(nn.Module):
         hidden_states = self.embedding(input_ids)
         residual = None
         for layer in self.layers:
+            # Somewhere here, make it output experiment outputs
             hidden_states, residual = layer(
                 hidden_states,
                 residual,
