@@ -157,12 +157,19 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                                               **factory_kwargs)
         
         self.experiments = experiments
-        if "upi" in self.experiments.keys():
-            self.register_buffer('upi_mask', torch.ones(self.nheads).to(device=device, dtype=dtype), persistent=True)
+        if "upi" in self.experiments:
+            self.register_buffer('upi_mask', torch.ones(self.nheads, device=device, dtype=dtype), persistent=True)
             upi_mask_file = self.experiments["upi"]
             if os.path.isfile(upi_mask_file):
                 mask = torch.load(upi_mask_file)[self.layer_idx].to(device=device, dtype=dtype)
                 self.upi_mask.copy_(mask) # (nheads,)
+
+        # State Passing Arguments
+        # @haochen: Setting fixed batch size at this point. Might need to switch to dynamic batch size in the future. 
+        if "sp" in self.experiments:
+            batch = self.experiments["sp"]["batch"]
+            self.sp_dropout = self.experiments["sp"]["dropout"] # Probability for zero out the initial states
+            self.register_buffer('prev_final_states', torch.zeros([batch, self.nheads, self.headdim, self.d_state], device=device, dtype=dtype), persistent=False)
 
     def forward(self, u, seqlen=None, seq_idx=None, cu_seqlens=None, inference_params=None):
         """
@@ -198,11 +205,18 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
         A = -torch.exp(self.A_log.float())  # (nheads) or (d_inner, d_state)
         dt_limit_kwargs = {} if self.dt_limit == (0.0, float("inf")) else dict(dt_limit=self.dt_limit)
         
+        initial_states = None
+        if "sp" in self.experiments:
+            if self.sp_dropout < torch.rand(1).item():
+                initial_states = self.prev_final_states[:batch].to(x.device)
+            else:
+                initial_states = torch.zeros_like(self.prev_final_states[:batch]).to(x.device)
+
         # Record ERF and logits only when using the less fused kernel
         if self.use_mem_eff_path and inference_params is None \
-            and ("erf" not in self.experiments.keys()) \
-            and ("logits" not in self.experiments.keys()):     
-            if "upi" in self.experiments.keys():
+            and ("erf" not in self.experiments) \
+            and ("logits" not in self.experiments):     
+            if "upi" in self.experiments:
                 # B & C are grouped and shared across heads
                 # A & dt are for each head, so we should scale them to get head-wise control
                 zxbc, dt = torch.split(
@@ -230,8 +244,16 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                 headdim=None if self.D_has_hdim else self.headdim,
                 ngroups=self.ngroups,
                 norm_before_gate=self.norm_before_gate,
+                initial_states=initial_states,
+                return_final_states="sp" in self.experiments,
                 **dt_limit_kwargs,
             )
+
+            if "sp" in self.experiments:
+                final_states = out[1].detach()
+                self.prev_final_states[:final_states.shape[0]].copy_(final_states)
+                out = out[0]
+
             if seqlen_og is not None:
                 out = rearrange(out, "b l d -> (b l) d")
             if self.process_group is not None:
@@ -273,7 +295,7 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                 ).transpose(1, 2)
             x, B, C = torch.split(xBC, [self.d_ssm, self.ngroups * self.d_state, self.ngroups * self.d_state], dim=-1)
             
-            if "erf" in self.experiments.keys():
+            if "erf" in self.experiments:
                 with torch.no_grad():
                     mmd = mmd_ssd_full_chunk(
                         dt, 
@@ -286,7 +308,7 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                     )
                 experiment_out['mmd'] = mmd
 
-            if "logits" in self.experiments.keys(): 
+            if "logits" in self.experiments: 
                 with torch.no_grad():
                     logits = {}
                     logits['x'] = rearrange(x, "b l (h p) -> b l h p", p=self.headdim).cpu()
@@ -300,7 +322,7 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
 
             dt_bias = self.dt_bias
             dt_softplus = True
-            if "upi" in self.experiments.keys():
+            if "upi" in self.experiments:
                 # Precompute scaled delta and disable later ones
                 dt = F.softplus(dt + self.dt_bias) / self.upi_mask
                 dt_bias = None
@@ -320,16 +342,20 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                 seq_idx=seq_idx,
                 cu_seqlens=cu_seqlens,
                 **dt_limit_kwargs,
-                return_final_states=ssm_state is not None,
+                initial_states=initial_states,
+                return_final_states=(ssm_state is not None) or ("sp" in self.experiments),
                 return_varlen_states=cu_seqlens is not None and inference_params is not None,
             )
-            if ssm_state is not None:
-                y, last_state, *rest = y
-                if cu_seqlens is None:
-                    ssm_state.copy_(last_state)
-                else:
-                    varlen_states = rest[0]
-                    ssm_state.copy_(varlen_states)
+            if (ssm_state is not None) or ("sp" in self.experiments):
+                y, final_states, *rest = y
+                if ssm_state is not None:
+                    if cu_seqlens is None:
+                        ssm_state.copy_(final_states)
+                    else:
+                        varlen_states = rest[0]
+                        ssm_state.copy_(varlen_states)
+                if "sp" in self.experiments:
+                    self.prev_final_states[:final_states.shape[0]].copy_(final_states.detach())
             y = rearrange(y, "b l h p -> b l (h p)")
             if self.rmsnorm:
                 y = self.norm(y, z)
@@ -375,7 +401,7 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
         x, B, C = torch.split(xBC, [self.d_ssm, self.ngroups * self.d_state, self.ngroups * self.d_state], dim=-1)
         A = -torch.exp(self.A_log.float())  # (nheads,)
 
-        if "upi" in self.experiments.keys():
+        if "upi" in self.experiments:
             with torch.no_grad():
                 # B & C are grouped and shared across heads
                 # A & dt are for each head, so we should scale them to get head-wise control

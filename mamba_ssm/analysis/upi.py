@@ -12,6 +12,10 @@ def scale_dt(scale_mask, dt, dt_bias):
     y = torch.expm1(t).clamp_min(1e-6)
     return torch.log(y) - dt_bias
 
+def dynamic_scale_mask(scale_mask, seq_max_new, seq_max=32768, seq_min=4096):
+    scale = max(0, (seq_max_new-seq_min)/(seq_max-seq_min))
+    return scale * (scale_mask - 1) + 1
+
 # Easiest way to load/modify the mask: just change the state dict
 def add_upi_to_state_dict(ckpt_dir, upi_dir, save_dir):
     state_dict = torch.load(ckpt_dir)

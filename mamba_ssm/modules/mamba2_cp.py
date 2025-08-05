@@ -412,7 +412,6 @@ def in_proj_split(inputs, mamba2: Mamba2):
     )
     return z0, x0, z, xBC, dt
 
-
 def scan(
     chunk_scan_combined_impl: Callable,
     xBC: torch.Tensor,
@@ -420,7 +419,7 @@ def scan(
     z: torch.Tensor,
     mamba2: Mamba2,
     seq_idx=None,
-    cp_mesh: Optional[dist.device_mesh.DeviceMesh] = None,
+    cp_mesh: Optional[dist.device_mesh.DeviceMesh] = None,    
 ) -> tuple[torch.Tensor, torch.Tensor]:
     x, B, C = torch.split(
         xBC,
@@ -437,7 +436,7 @@ def scan(
 
     experiment_out = {}
 
-    if "erf" in mamba2.experiments.keys():
+    if "erf" in mamba2.experiments:
         with torch.no_grad():
             mmd = mmd_ssd_full_chunk(
                 dt, 
@@ -450,7 +449,7 @@ def scan(
             )
         experiment_out["mmd"] = mmd
     
-    if "logits" in mamba2.experiments.keys(): 
+    if "logits" in mamba2.experiments: 
         with torch.no_grad():
             logits = {}
             logits['x'] = rearrange(x, "b l (h p) -> b l h p", p=mamba2.headdim).cpu()
@@ -464,11 +463,29 @@ def scan(
 
     dt_bias = mamba2.dt_bias
     dt_softplus = True
-    if "upi" in mamba2.experiments.keys():
+    if "upi" in mamba2.experiments:
         # Precompute scaled delta and disable later ones
         dt = F.softplus(dt + mamba2.dt_bias) / mamba2.upi_mask
         dt_bias = None
         dt_softplus = False
+
+    initial_states = None
+    return_final_states = False
+    if "sp" in mamba2.experiments:
+        # Only load the initial state in the leading CP rank
+        if (cp_mesh is None) or cp_mesh.get_local_rank() == 0:
+            if mamba2.sp_dropout < torch.rand(1).item():
+                initial_states = mamba2.prev_final_states[:batch].to(x.device)
+            else:
+                initial_states = torch.zeros_like(mamba2.prev_final_states[:batch])
+                
+        # Only return the final state in the final CP rank
+        if (cp_mesh is None) or (cp_mesh.get_local_rank() == cp_mesh.size() - 1):
+            return_final_states = True
+
+    # Print initial state magnitude for checking on the first rank
+    if cp_mesh.get_local_rank() == 0:
+        print(f"[layer {mamba2.layer_idx}] initial_states: {initial_states.mean(dim=0).norm(p=2)}")
 
     y = chunk_scan_combined_impl(
         rearrange(x, "b l (h p) -> b l h p", p=mamba2.headdim),
@@ -484,13 +501,52 @@ def scan(
         if not mamba2.rmsnorm
         else None,
         dt_bias=dt_bias,
+        initial_states=initial_states, 
         dt_softplus=dt_softplus,
         seq_idx=seq_idx,
         cu_seqlens=None,
-        return_final_states=False,
+        return_final_states=return_final_states,
         return_varlen_states=False,
         cp_mesh=cp_mesh,
     )
+
+    if "sp" in mamba2.experiments:
+        if cp_mesh is not None:
+            # Only pass the final state from the final rank to the initial rank and store it
+            group = cp_mesh.get_group()
+            initial_rank = 0
+            final_rank = cp_mesh.size() - 1
+            local_rank = cp_mesh.get_local_rank()
+
+            # Keep the prev_final_states on the final rank always updated, 
+            # and use reduce to sync to initial rank
+            if local_rank == final_rank:
+                mamba2.prev_final_states[:batch] = y[1].detach()
+                y = y[0]
+            else: 
+                mamba2.prev_final_states = torch.zeros_like(mamba2.prev_final_states)
+            
+            # @haochen: both all_reduce and reduce work
+            
+            # dist.all_reduce(
+            #     mamba2.prev_final_states, 
+            #     op=dist.ReduceOp.SUM, 
+            #     group=group, 
+            #     async_op=False
+            # )
+
+            dist.reduce(
+                mamba2.prev_final_states, 
+                dst=dist.get_global_rank(group, initial_rank), 
+                op=dist.ReduceOp.SUM, 
+                group=group, 
+                async_op=False
+            )
+
+        else:
+            mamba2.prev_final_states[:batch] = y[1].detach()
+            y = y[0]
+
     y = rearrange(y, "b l h p -> b l (h p)")
     return y, experiment_out
 
@@ -512,7 +568,7 @@ class _Mamba2Ref(Mamba2):
 
         batch, seqlen, dim = u.shape
         if not self.h5_init:
-            if "erf" in self.experiments.keys():
+            if "erf" in self.experiments:
                 erf_dataset_name = f"mmd_{self.layer_idx}_{seqlen}"
                 with h5py.File(self.experiments["erf"], "a") as f:
                     if erf_dataset_name not in f:
@@ -604,7 +660,7 @@ class Mamba2CP(Mamba2):
         if d_nonssm > 0:
             y = torch.cat([F.silu(z0) * x0, y], dim=-1)
         out = self.out_proj(y)
-        
+
         if len(experiment_out) == 0:
             return out
         else:
