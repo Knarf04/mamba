@@ -550,6 +550,8 @@ def scan(
     if "sp" in mamba2.experiments:
         if cp_mesh is None or cp_mesh.get_local_rank() == 0:
             experiment_out["final_states"] = mamba2.prev_final_states[:batch]
+        else:
+            experiment_out["final_states"] = torch.zeros_like(mamba2.prev_final_states[:batch])
 
     y = rearrange(y, "b l h p -> b l (h p)")
     return y, experiment_out
