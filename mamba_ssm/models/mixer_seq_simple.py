@@ -215,6 +215,8 @@ class MixerModel(nn.Module):
             )
         )
 
+        self.experiments = experiments
+
     def allocate_inference_cache(self, batch_size, max_seqlen, dtype=None, **kwargs):
         return {
             i: layer.allocate_inference_cache(
