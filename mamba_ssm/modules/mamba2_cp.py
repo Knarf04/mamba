@@ -484,8 +484,8 @@ def scan(
             return_final_states = True
 
     # Print initial state magnitude for checking on the first rank
-    if cp_mesh.get_local_rank() == 0:
-        print(f"[layer {mamba2.layer_idx}] initial_states: {initial_states.mean(dim=0).norm(p=2)}")
+    # if cp_mesh.get_local_rank() == 0:
+    #     print(f"[layer {mamba2.layer_idx}] initial_states: {initial_states.mean(dim=0).norm(p=2)}")
 
     y = chunk_scan_combined_impl(
         rearrange(x, "b l (h p) -> b l h p", p=mamba2.headdim),
