@@ -547,6 +547,10 @@ def scan(
             mamba2.prev_final_states[:batch] = y[1].detach()
             y = y[0]
 
+    if "sp" in mamba2.experiments:
+        if cp_mesh is None or cp_mesh.get_local_rank() == 0:
+            experiment_out["final_states"] = mamba2.prev_final_states[:batch]
+
     y = rearrange(y, "b l h p -> b l (h p)")
     return y, experiment_out
 
@@ -661,10 +665,10 @@ class Mamba2CP(Mamba2):
             y = torch.cat([F.silu(z0) * x0, y], dim=-1)
         out = self.out_proj(y)
 
-        if len(experiment_out) == 0:
+        if len(self.experiments) == 0:
             return out
         else:
-            return out, experiment_out
+            return out, {self.layer_idx: experiment_out}
 
 
 class MHACP(MHA):
@@ -735,7 +739,6 @@ class MHACP(MHA):
             kv = seq_to_zigzag_comms(kv, self.cp_mesh, self.seq_dim)
 
         k, v = kv.unbind(dim=-3)
-        # TODO: Add scaling here
         context = self.ring_flash_attn_impl(
             q,
             k,
@@ -751,4 +754,7 @@ class MHACP(MHA):
         out = self.out_proj(context)
         if self.cp_attn_impl == "zigzag":
             out = zigzag_to_seq_comms(out, self.cp_mesh, self.seq_dim)
-        return out
+        if len(self.experiments) == 0:
+            return out
+        else:
+            return out, {self.layer_idx: {}}

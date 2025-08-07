@@ -226,14 +226,24 @@ class MixerModel(nn.Module):
     def forward(self, input_ids, inference_params=None, **mixer_kwargs):
         hidden_states = self.embedding(input_ids)
         residual = None
+        exp_out_collect = {}
         for layer in self.layers:
             # Somewhere here, make it output experiment outputs
-            hidden_states, residual = layer(
-                hidden_states,
-                residual,
-                inference_params=inference_params,
-                **mixer_kwargs,
-            )
+            if len(self.experiments) == 0:
+                hidden_states, residual = layer(
+                    hidden_states,
+                    residual,
+                    inference_params=inference_params,
+                    **mixer_kwargs,
+                )
+            else:
+                hidden_states, residual, experiment_out = layer(
+                    hidden_states,
+                    residual,
+                    inference_params=inference_params,
+                    **mixer_kwargs,
+                )
+                exp_out_collect = exp_out_collect | experiment_out
         if not self.fused_add_norm:
             residual = (
                 (hidden_states + residual) if residual is not None else hidden_states
@@ -251,7 +261,10 @@ class MixerModel(nn.Module):
                 residual_in_fp32=self.residual_in_fp32,
                 is_rms_norm=isinstance(self.norm_f, RMSNorm),
             )
-        return hidden_states
+        if len(self.experiments) == 0:
+            return hidden_states
+        else:
+            return hidden_states, exp_out_collect
 
 
 class MambaLMHeadModel(nn.Module, GenerationMixin):
@@ -338,14 +351,22 @@ class MambaLMHeadModel(nn.Module, GenerationMixin):
         "position_ids" is just to be compatible with Transformer generation. We don't use it.
         num_last_tokens: if > 0, only return the logits for the last n tokens
         """
-        hidden_states = self.backbone(
-            input_ids, inference_params=inference_params, **mixer_kwargs
-        )
+        if len(self.backbone.experiments) == 0:
+            hidden_states = self.backbone(
+                input_ids, inference_params=inference_params, **mixer_kwargs
+            )
+        else:
+            hidden_states, exp_out_collect = self.backbone(
+                input_ids, inference_params=inference_params, **mixer_kwargs
+            )
         if num_last_tokens > 0:
             hidden_states = hidden_states[:, -num_last_tokens:]
         lm_logits = self.lm_head(hidden_states)
         CausalLMOutput = namedtuple("CausalLMOutput", ["logits"])
-        return CausalLMOutput(logits=lm_logits)
+        if len(self.backbone.experiments) == 0:
+            return CausalLMOutput(logits=lm_logits)
+        else:
+            return CausalLMOutput(logits=lm_logits), exp_out_collect
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name, device=None, dtype=None, **kwargs):

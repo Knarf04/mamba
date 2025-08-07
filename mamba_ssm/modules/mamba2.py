@@ -195,7 +195,10 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
             if inference_params.seqlen_offset > 0:
                 # The states are updated inplace
                 out, _, _ = self.step(u, conv_state, ssm_state)
-                return out
+                if len(self.experiments) == 0:
+                    return out
+                else:
+                    return out, {self.layer_idx: experiment_out}
 
         zxbcdt = self.in_proj(u)  # (B, L, d_in_proj) or (B * L, d_in_proj)
         if seqlen_og is not None:
@@ -365,10 +368,13 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                 y = rearrange(y, "b l d -> (b l) d")
             out = self.out_proj(y)
         
-        if len(experiment_out) == 0:
+        if "sp" in self.experiments:
+            experiment_out["final_states"] = self.prev_final_states[:batch]
+
+        if len(self.experiments) == 0:
             return out
         else:
-            return out, experiment_out
+            return out, {self.layer_idx: experiment_out}
 
     def step(self, hidden_states, conv_state, ssm_state):
         dtype = hidden_states.dtype

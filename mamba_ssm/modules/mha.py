@@ -297,4 +297,8 @@ class MHA(nn.Module):
         if self.mlp_dim > 0:
             context = torch.cat([context, x_mlp], dim=-1)
         out = self.out_proj(context)
-        return out
+        
+        if len(self.experiments) == 0:
+            return out
+        else:
+            return out, {self.layer_idx: {}}

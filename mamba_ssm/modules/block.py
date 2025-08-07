@@ -65,8 +65,10 @@ class Block(nn.Module):
                 is_rms_norm=isinstance(self.norm, RMSNorm)
             )
 
-        # Somewhere here, make it output the experiments
-        hidden_states = self.mixer(hidden_states, inference_params=inference_params, **mixer_kwargs)
+        if len(self.mixer.experiments) == 0:
+            hidden_states = self.mixer(hidden_states, inference_params=inference_params, **mixer_kwargs)
+        else:
+            hidden_states, experiment_out = self.mixer(hidden_states, inference_params=inference_params, **mixer_kwargs)
 
         if self.mlp is not None:
             if not self.fused_add_norm:
@@ -87,7 +89,10 @@ class Block(nn.Module):
                 )
             hidden_states = self.mlp(hidden_states)
 
-        return hidden_states, residual
+        if len(self.mixer.experiments) == 0:
+            return hidden_states, residual
+        else:
+            return hidden_states, residual, experiment_out
 
     def allocate_inference_cache(self, batch_size, max_seqlen, dtype=None, **kwargs):
         return self.mixer.allocate_inference_cache(batch_size, max_seqlen, dtype=dtype, **kwargs)
