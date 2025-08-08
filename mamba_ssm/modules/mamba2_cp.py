@@ -474,11 +474,11 @@ def scan(
     if "sp" in mamba2.experiments:
         # Only load the initial state in the leading CP rank
         if (cp_mesh is None) or cp_mesh.get_local_rank() == 0:
-            if mamba2.sp_dropout < torch.rand(1).item():
-                initial_states = mamba2.prev_final_states[:batch].to(x.device)
-            else:
+            if mamba2.sp_dropout:
                 initial_states = torch.zeros_like(mamba2.prev_final_states[:batch])
-                
+            else:
+                initial_states = mamba2.prev_final_states[:batch].to(x.device)
+
         # Only return the final state in the final CP rank
         if (cp_mesh is None) or (cp_mesh.get_local_rank() == cp_mesh.size() - 1):
             return_final_states = True
