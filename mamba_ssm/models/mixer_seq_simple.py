@@ -230,7 +230,8 @@ class MixerModel(nn.Module):
         residual = None
         exp_out_collect = {}
         if "sp" in self.experiments:
-            sp_dropout = self.experiments["sp"]["dropout"] < torch.rand(1).item()
+            batch = hidden_states.shape[0]
+            sp_dropout = self.experiments["sp"]["dropout"] > torch.rand(batch)
         for layer in self.layers:
             # Somewhere here, make it output experiment outputs
             if len(self.experiments) == 0:
@@ -242,7 +243,7 @@ class MixerModel(nn.Module):
                 )
             else:
                 if "sp" in self.experiments:
-                    layer.mixer.sp_dropout = sp_dropout
+                    layer.mixer.sp_dropout[:batch] = sp_dropout
                 hidden_states, residual, experiment_out = layer(
                     hidden_states,
                     residual,

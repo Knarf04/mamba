@@ -168,7 +168,7 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
         # @haochen: Setting fixed batch size at this point. Might need to switch to dynamic batch size in the future. 
         if "sp" in self.experiments:
             batch = self.experiments["sp"]["batch"]
-            self.sp_dropout = False # Whether start the model from zeros or not
+            self.register_buffer('sp_dropout', torch.tensor([False]*batch, device=device, dtype=torch.bool), persistent=False) # Whether start the model from zeros or not
             self.register_buffer('prev_final_states', torch.zeros([batch, self.nheads, self.headdim, self.d_state], device=device, dtype=dtype), persistent=False)
 
     def forward(self, u, seqlen=None, seq_idx=None, cu_seqlens=None, inference_params=None):
@@ -210,10 +210,8 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
         
         initial_states = None
         if "sp" in self.experiments:
-            if self.sp_dropout:
-                initial_states = torch.zeros_like(self.prev_final_states[:batch]).to(x.device)
-            else:
-                initial_states = self.prev_final_states[:batch].to(x.device)
+            initial_states = self.prev_final_states[:batch].clone().detach().to(x.device)
+            initial_states[self.sp_dropout[:batch]] = 0.0
 
         # Record ERF and logits only when using the less fused kernel
         if self.use_mem_eff_path and inference_params is None \
