@@ -26,7 +26,7 @@ def scale_proper(scale, A, X, dt, dt_bias):
     
     sA = A * scale
     x_scale = torch.expm1(sA * dt_sp) / torch.expm1(A * dt_sp)
-    sX = X * x_scale
+    sX = X * x_scale.unsqueeze(-1)
     return sA, sX, dt_sp
 
 # Easiest way to load/modify the mask: just change the state dict
