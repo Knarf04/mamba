@@ -436,31 +436,6 @@ def scan(
 
     experiment_out = {}
 
-    # if "erf" in mamba2.experiments:
-    #     with torch.no_grad():
-    #         mmd = mmd_ssd_full_chunk(
-    #             dt, 
-    #             A, 
-    #             B.view(batch, seqlen, mamba2.ngroups, -1), 
-    #             C.view(batch, seqlen, mamba2.ngroups, -1), 
-    #             dt_bias=mamba2.dt_bias, 
-    #             dt_softplus=True, 
-    #             dt_limit=(0.0, float("inf"))
-    #         )
-    #     experiment_out["mmd"] = mmd
-    
-    # if "logits" in mamba2.experiments: 
-    #     with torch.no_grad():
-    #         logits = {}
-    #         logits['x'] = rearrange(x, "b l (h p) -> b l h p", p=mamba2.headdim).cpu()
-    #         logits['dt'] = dt.cpu()
-    #         logits['A'] = A.cpu()
-    #         logits['B'] = rearrange(B, "b l (g n) -> b l g n", g=mamba2.ngroups).cpu()
-    #         logits['C'] = rearrange(C, "b l (g n) -> b l g n", g=mamba2.ngroups).cpu()
-    #         logits['D'] = mamba2.D.cpu()
-    #         logits['dt_bias'] = mamba2.dt_bias.cpu()
-    #     experiment_out['logits'] = logits
-
     dt_bias = mamba2.dt_bias
     dt_softplus = True
     hidden_states = rearrange(x, "b l (h p) -> b l h p", p=mamba2.headdim)
@@ -502,6 +477,20 @@ def scan(
             hidden_states_scale = torch.expm1(token_sig * A * dt) / (token_sig * torch.expm1(A * dt))
             hidden_states = (hidden_states * hidden_states_scale.unsqueeze(-1)).to(dtype=dtype)
             dt = dt * token_sig
+
+    if mamba2.exact:
+        dtype = dt.dtype
+        dt = F.softplus((dt + mamba2.dt_bias).to(dtype=torch.float32)).to(dtype=dtype)
+        
+        dt = dt / mamba2.scale
+
+        dt_bias = None
+        dt_softplus = False
+
+        dtype = hidden_states.dtype
+        hidden_states_scale = torch.expm1(A * dt) / (A * dt)
+        hidden_states = (hidden_states * hidden_states_scale.unsqueeze(-1)).to(dtype=dtype)
+        dt = dt * token_sig
 
     initial_states = None
     return_final_states = False

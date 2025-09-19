@@ -183,6 +183,8 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
         self.adaptive_upi = self.experiments.get("adaptive_upi", False)
         self.token_sig = self.experiments.get("token_sig", "softplus")
         self.scale_portion = self.experiments.get("scale_portion", 0.95)
+        
+        self.exact = self.experiments.get("exact", False)
 
     def forward(self, u, seqlen=None, seq_idx=None, cu_seqlens=None, inference_params=None):
         """
@@ -310,31 +312,6 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                 ).transpose(1, 2)
             x, B, C = torch.split(xBC, [self.d_ssm, self.ngroups * self.d_state, self.ngroups * self.d_state], dim=-1)
             
-            # if "erf" in self.experiments:
-            #     with torch.no_grad():
-            #         mmd = mmd_ssd_full_chunk(
-            #             dt, 
-            #             A, 
-            #             B.view(batch, seqlen, self.ngroups, -1), 
-            #             C.view(batch, seqlen, self.ngroups, -1), 
-            #             dt_bias=self.dt_bias, 
-            #             dt_softplus=True, 
-            #             dt_limit=(0.0, float("inf"))
-            #         )
-            #     experiment_out['mmd'] = mmd
-
-            # if "logits" in self.experiments: 
-            #     with torch.no_grad():
-            #         logits = {}
-            #         logits['x'] = rearrange(x, "b l (h p) -> b l h p", p=self.headdim).cpu()
-            #         logits['dt'] = dt.cpu()
-            #         logits['A'] = A.cpu()
-            #         logits['B'] = rearrange(B, "b l (g n) -> b l g n", g=self.ngroups).cpu()
-            #         logits['C'] = rearrange(C, "b l (g n) -> b l g n", g=self.ngroups).cpu()
-            #         logits['D'] = self.D.cpu()
-            #         logits['dt_bias'] = self.dt_bias.cpu()
-            #     experiment_out['logits'] = logits
-
             dt_bias = self.dt_bias
             dt_softplus = True
             hidden_states = rearrange(x, "b l (h p) -> b l h p", p=self.headdim)
@@ -486,7 +463,7 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                 dt = F.softplus((dt + dt_bias).to(dtype=torch.float32)).to(dtype=dtype)
                 dt_bias = None
                 dt_softplus = False
-                
+
                 if "upi" in self.experiments:
                     # B & C are grouped and shared across heads
                     # A & dt are for each head, so we should scale them to get head-wise control
