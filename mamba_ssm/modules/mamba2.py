@@ -166,10 +166,23 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
 
         # State Passing Arguments
         # @haochen: Setting fixed batch size at this point. Might need to switch to dynamic batch size in the future. 
+        self.state_pass = False
         if "sp" in self.experiments:
+            self.state_pass = True
             batch = self.experiments["sp"]["batch"]
             self.register_buffer('sp_dropout', torch.tensor([False]*batch, device=device, dtype=torch.bool), persistent=False) # Whether start the model from zeros or not
             self.register_buffer('prev_final_states', torch.zeros([batch, self.nheads, self.headdim, self.d_state], device=device, dtype=dtype), persistent=False)
+
+        self.upi_dynamic = False # TODO: enable dynamic handling in config
+        self.seq_len = 0
+
+        self.proper_upi = self.experiments.get("proper_upi", False)
+        
+        self.scale = self.experiments.get("scale", 1)
+
+        self.adaptive_upi = self.experiments.get("adaptive_upi", False)
+        self.token_sig = self.experiments.get("token_sig", "softplus")
+        self.scale_portion = self.experiments.get("scale_portion", 0.95)
 
     def forward(self, u, seqlen=None, seq_idx=None, cu_seqlens=None, inference_params=None):
         """
@@ -209,14 +222,15 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
         dt_limit_kwargs = {} if self.dt_limit == (0.0, float("inf")) else dict(dt_limit=self.dt_limit)
         
         initial_states = None
-        if "sp" in self.experiments:
+        if self.state_pass:
             initial_states = self.prev_final_states[:batch].clone().detach().to(x.device)
-            initial_states[self.sp_dropout[:batch]] = 0.0
+            initial_states[self.state_pass_dropout[:batch]] = 0.0
 
         # Record ERF and logits only when using the less fused kernel
-        if self.use_mem_eff_path and inference_params is None \
-            and ("erf" not in self.experiments) \
-            and ("logits" not in self.experiments):     
+        # if self.use_mem_eff_path and inference_params is None \
+        #     and ("erf" not in self.experiments) \
+        #     and ("logits" not in self.experiments):     
+        if False:
             if "upi" in self.experiments:
                 # B & C are grouped and shared across heads
                 # A & dt are for each head, so we should scale them to get head-wise control
@@ -246,11 +260,11 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                 ngroups=self.ngroups,
                 norm_before_gate=self.norm_before_gate,
                 initial_states=initial_states,
-                return_final_states="sp" in self.experiments,
+                return_final_states=self.state_pass,
                 **dt_limit_kwargs,
             )
 
-            if "sp" in self.experiments:
+            if self.state_pass:
                 final_states = out[1].detach()
                 self.prev_final_states[:final_states.shape[0]].copy_(final_states)
                 out = out[0]
@@ -296,38 +310,72 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                 ).transpose(1, 2)
             x, B, C = torch.split(xBC, [self.d_ssm, self.ngroups * self.d_state, self.ngroups * self.d_state], dim=-1)
             
-            if "erf" in self.experiments:
-                with torch.no_grad():
-                    mmd = mmd_ssd_full_chunk(
-                        dt, 
-                        A, 
-                        B.view(batch, seqlen, self.ngroups, -1), 
-                        C.view(batch, seqlen, self.ngroups, -1), 
-                        dt_bias=self.dt_bias, 
-                        dt_softplus=True, 
-                        dt_limit=(0.0, float("inf"))
-                    )
-                experiment_out['mmd'] = mmd
+            # if "erf" in self.experiments:
+            #     with torch.no_grad():
+            #         mmd = mmd_ssd_full_chunk(
+            #             dt, 
+            #             A, 
+            #             B.view(batch, seqlen, self.ngroups, -1), 
+            #             C.view(batch, seqlen, self.ngroups, -1), 
+            #             dt_bias=self.dt_bias, 
+            #             dt_softplus=True, 
+            #             dt_limit=(0.0, float("inf"))
+            #         )
+            #     experiment_out['mmd'] = mmd
 
-            if "logits" in self.experiments: 
-                with torch.no_grad():
-                    logits = {}
-                    logits['x'] = rearrange(x, "b l (h p) -> b l h p", p=self.headdim).cpu()
-                    logits['dt'] = dt.cpu()
-                    logits['A'] = A.cpu()
-                    logits['B'] = rearrange(B, "b l (g n) -> b l g n", g=self.ngroups).cpu()
-                    logits['C'] = rearrange(C, "b l (g n) -> b l g n", g=self.ngroups).cpu()
-                    logits['D'] = self.D.cpu()
-                    logits['dt_bias'] = self.dt_bias.cpu()
-                experiment_out['logits'] = logits
+            # if "logits" in self.experiments: 
+            #     with torch.no_grad():
+            #         logits = {}
+            #         logits['x'] = rearrange(x, "b l (h p) -> b l h p", p=self.headdim).cpu()
+            #         logits['dt'] = dt.cpu()
+            #         logits['A'] = A.cpu()
+            #         logits['B'] = rearrange(B, "b l (g n) -> b l g n", g=self.ngroups).cpu()
+            #         logits['C'] = rearrange(C, "b l (g n) -> b l g n", g=self.ngroups).cpu()
+            #         logits['D'] = self.D.cpu()
+            #         logits['dt_bias'] = self.dt_bias.cpu()
+            #     experiment_out['logits'] = logits
 
             dt_bias = self.dt_bias
             dt_softplus = True
-            if "upi" in self.experiments:
-                # Precompute scaled delta and disable later ones
-                dt = F.softplus(dt + self.dt_bias) / self.upi_mask
+            hidden_states = rearrange(x, "b l (h p) -> b l h p", p=self.headdim)
+
+            if "upi" in self.experiments or self.proper_upi or self.adaptive_upi:
+                dtype = dt.dtype
+                dt = F.softplus((dt + self.dt_bias).to(dtype=torch.float32)).to(dtype=dtype)
                 dt_bias = None
                 dt_softplus = False
+
+                if "upi" in self.experiments:              
+                    dt = dt / self.upi_mask
+                    
+                elif self.proper_upi:
+                    # Dynamic upi scale is only possible with a cache of size O(seq_len)
+                    dtype = hidden_states.dtype
+                    hidden_states_scale = torch.expm1(self.scale * A * dt) / torch.expm1(A * dt)
+                    A = self.scale * A
+                    hidden_states = (hidden_states * hidden_states_scale.unsqueeze(-1)).to(dtype=dtype)
+                
+                elif self.adaptive_upi:
+                    # Dynamic upi scale is only possible with a cache of size O(seq_len)
+                    token_sig = self.scale
+                    if self.token_sig == "forget":
+                        # 1) forget: 1-exp(-a*delta)
+                        token_sig = token_sig * (-torch.expm1(A * dt)) 
+                    elif self.token_sig == "sigmoid":
+                        # 2) sigmoid: 1-exp(-delta)
+                        token_sig = token_sig * (-torch.expm1(dt)) 
+                    elif self.token_sig == "input":
+                        # 3) input: delta*B
+                        B_norm = torch.linalg.norm(B, dim=-1, keepdim=True)
+                        token_sig = token_sig * dt * B_norm
+                    elif self.token_sig == "softplus":
+                        # 4) softplus: delta
+                        token_sig = token_sig * dt
+
+                    dtype = hidden_states.dtype
+                    hidden_states_scale = torch.expm1(token_sig * A * dt) / (token_sig * torch.expm1(A * dt))
+                    hidden_states = (hidden_states * hidden_states_scale.unsqueeze(-1)).to(dtype=dtype)
+                    dt = dt * token_sig
 
             y = mamba_chunk_scan_combined(
                 rearrange(x, "b l (h p) -> b l h p", p=self.headdim),
@@ -344,10 +392,10 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                 cu_seqlens=cu_seqlens,
                 **dt_limit_kwargs,
                 initial_states=initial_states,
-                return_final_states=(ssm_state is not None) or ("sp" in self.experiments),
+                return_final_states=(ssm_state is not None) or self.state_pass,
                 return_varlen_states=cu_seqlens is not None and inference_params is not None,
             )
-            if (ssm_state is not None) or ("sp" in self.experiments):
+            if (ssm_state is not None) or self.state_pass:
                 y, final_states, *rest = y
                 if ssm_state is not None:
                     if cu_seqlens is None:
@@ -355,7 +403,7 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                     else:
                         varlen_states = rest[0]
                         ssm_state.copy_(varlen_states)
-                if "sp" in self.experiments:
+                if self.state_pass:
                     self.prev_final_states[:final_states.shape[0]].copy_(final_states.detach())
             y = rearrange(y, "b l h p -> b l (h p)")
             if self.rmsnorm:
@@ -366,7 +414,7 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                 y = rearrange(y, "b l d -> (b l) d")
             out = self.out_proj(y)
         
-        if "sp" in self.experiments:
+        if self.state_pass:
             experiment_out["final_states"] = self.prev_final_states[:batch]
 
         if len(self.experiments) == 0:
@@ -405,14 +453,9 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
         x, B, C = torch.split(xBC, [self.d_ssm, self.ngroups * self.d_state, self.ngroups * self.d_state], dim=-1)
         A = -torch.exp(self.A_log.float())  # (nheads,)
 
-        if "upi" in self.experiments:
-            with torch.no_grad():
-                # B & C are grouped and shared across heads
-                # A & dt are for each head, so we should scale them to get head-wise control
-                dt = scale_dt(self.upi_mask, dt, self.dt_bias)
-
         # SSM step
-        if selective_state_update is None:
+        # if selective_state_update is None:
+        if False:
             assert self.ngroups == 1, "Only support ngroups=1 for this inference code path"
             # Discretize A and B
             dt = F.softplus(dt + self.dt_bias.to(dtype=dt.dtype))  # (batch, nheads)
@@ -432,12 +475,55 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
             D = repeat(self.D, "h -> h p", p=self.headdim)
             B = rearrange(B, "b (g n) -> b g n", g=self.ngroups)
             C = rearrange(C, "b (g n) -> b g n", g=self.ngroups)
-            x_reshaped = rearrange(x, "b (h p) -> b h p", p=self.headdim)
+            hidden_states = rearrange(x, "b (h p) -> b h p", p=self.headdim)
             if not self.rmsnorm:
                 z = rearrange(z, "b (h p) -> b h p", p=self.headdim)
+
+            dt_softplus = True
+
+            if self.proper_upi or self.adaptive_upi:
+                dtype = dt.dtype
+                dt = F.softplus((dt + dt_bias).to(dtype=torch.float32)).to(dtype=dtype)
+                dt_bias = None
+                dt_softplus = False
+                
+                if "upi" in self.experiments:
+                    # B & C are grouped and shared across heads
+                    # A & dt are for each head, so we should scale them to get head-wise control
+                    dt = dt / self.upi_mask.unsqueeze(-1)
+            
+                elif self.proper_upi:
+                    # Dynamic upi scale is only possible with a cache of size O(seq_len)
+                    dtype = hidden_states.dtype
+                    hidden_states_scale = torch.expm1(self.scale * A * dt) / torch.expm1(A * dt)
+                    A = A * self.scale 
+                    hidden_states = (hidden_states * hidden_states_scale).to(dtype=dtype)
+
+                elif self.adaptive_upi:
+                    # Dynamic upi scale is only possible with a cache of size O(seq_len)
+                    token_sig = self.scale
+                    if self.token_sig == "forget":
+                        # 1) forget: 1-exp(-a*delta)
+                        token_sig = token_sig * (-torch.expm1(A * dt)) 
+                    elif self.token_sig == "sigmoid":
+                        # 2) sigmoid: 1-exp(-delta)
+                        token_sig = token_sig * (-torch.expm1(dt)) 
+                    elif self.token_sig == "input":
+                        # 3) input: delta*B
+                        B_norm = torch.linalg.norm(B.view(B.shape[0], -1), dim=-1, keepdim=True)
+                        token_sig = token_sig * dt * B_norm.unsqueeze(-1)
+                    elif self.token_sig == "softplus":
+                        # 4) softplus: delta
+                        token_sig = token_sig * dt
+
+                    dtype = hidden_states.dtype
+                    hidden_states_scale = torch.expm1(token_sig * A * dt) / (token_sig * torch.expm1(A * dt))
+                    hidden_states = (hidden_states * hidden_states_scale).to(dtype=dtype)
+                    dt = dt * token_sig
+
             y = selective_state_update(
-                ssm_state, x_reshaped, dt, A, B, C, D, z=z if not self.rmsnorm else None,
-                dt_bias=dt_bias, dt_softplus=True
+                ssm_state, hidden_states, dt, A, B, C, D, z=z if not self.rmsnorm else None,
+                dt_bias=dt_bias, dt_softplus=dt_softplus
             )
             y = rearrange(y, "b h p -> b (h p)")
         if self.rmsnorm:

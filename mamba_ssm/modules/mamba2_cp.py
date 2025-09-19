@@ -436,42 +436,76 @@ def scan(
 
     experiment_out = {}
 
-    if "erf" in mamba2.experiments:
-        with torch.no_grad():
-            mmd = mmd_ssd_full_chunk(
-                dt, 
-                A, 
-                B.view(batch, seqlen, mamba2.ngroups, -1), 
-                C.view(batch, seqlen, mamba2.ngroups, -1), 
-                dt_bias=mamba2.dt_bias, 
-                dt_softplus=True, 
-                dt_limit=(0.0, float("inf"))
-            )
-        experiment_out["mmd"] = mmd
+    # if "erf" in mamba2.experiments:
+    #     with torch.no_grad():
+    #         mmd = mmd_ssd_full_chunk(
+    #             dt, 
+    #             A, 
+    #             B.view(batch, seqlen, mamba2.ngroups, -1), 
+    #             C.view(batch, seqlen, mamba2.ngroups, -1), 
+    #             dt_bias=mamba2.dt_bias, 
+    #             dt_softplus=True, 
+    #             dt_limit=(0.0, float("inf"))
+    #         )
+    #     experiment_out["mmd"] = mmd
     
-    if "logits" in mamba2.experiments: 
-        with torch.no_grad():
-            logits = {}
-            logits['x'] = rearrange(x, "b l (h p) -> b l h p", p=mamba2.headdim).cpu()
-            logits['dt'] = dt.cpu()
-            logits['A'] = A.cpu()
-            logits['B'] = rearrange(B, "b l (g n) -> b l g n", g=mamba2.ngroups).cpu()
-            logits['C'] = rearrange(C, "b l (g n) -> b l g n", g=mamba2.ngroups).cpu()
-            logits['D'] = mamba2.D.cpu()
-            logits['dt_bias'] = mamba2.dt_bias.cpu()
-        experiment_out['logits'] = logits
+    # if "logits" in mamba2.experiments: 
+    #     with torch.no_grad():
+    #         logits = {}
+    #         logits['x'] = rearrange(x, "b l (h p) -> b l h p", p=mamba2.headdim).cpu()
+    #         logits['dt'] = dt.cpu()
+    #         logits['A'] = A.cpu()
+    #         logits['B'] = rearrange(B, "b l (g n) -> b l g n", g=mamba2.ngroups).cpu()
+    #         logits['C'] = rearrange(C, "b l (g n) -> b l g n", g=mamba2.ngroups).cpu()
+    #         logits['D'] = mamba2.D.cpu()
+    #         logits['dt_bias'] = mamba2.dt_bias.cpu()
+    #     experiment_out['logits'] = logits
 
     dt_bias = mamba2.dt_bias
     dt_softplus = True
-    if "upi" in mamba2.experiments:
-        # Precompute scaled delta and disable later ones
-        dt = F.softplus(dt + mamba2.dt_bias) / mamba2.upi_mask
+    hidden_states = rearrange(x, "b l (h p) -> b l h p", p=mamba2.headdim)
+
+    if "upi" in mamba2.experiments or mamba2.proper_upi or mamba2.adaptive_upi:
+        dtype = dt.dtype
+        dt = F.softplus((dt + mamba2.dt_bias).to(dtype=torch.float32)).to(dtype=dtype)
         dt_bias = None
         dt_softplus = False
 
+        if "upi" in mamba2.experiments:              
+            dt = dt / mamba2.upi_mask
+            
+        elif mamba2.proper_upi:
+            # Dynamic upi scale is only possible with a cache of size O(seq_len)
+            dtype = hidden_states.dtype
+            hidden_states_scale = torch.expm1(mamba2.scale * A * dt) / torch.expm1(A * dt)
+            A = mamba2.scale * A
+            hidden_states = (hidden_states * hidden_states_scale.unsqueeze(-1)).to(dtype=dtype)
+        
+        elif mamba2.adaptive_upi:
+            # Dynamic upi scale is only possible with a cache of size O(seq_len)
+            token_sig = mamba2.scale
+            if mamba2.token_sig == "forget":
+                # 1) forget: 1-exp(-a*delta)
+                token_sig = token_sig * (-torch.expm1(A * dt)) 
+            elif mamba2.token_sig == "sigmoid":
+                # 2) sigmoid: 1-exp(-delta)
+                token_sig = token_sig * (-torch.expm1(dt)) 
+            elif mamba2.token_sig == "input":
+                # 3) input: delta*B
+                B_norm = torch.linalg.norm(B, dim=-1, keepdim=True)
+                token_sig = token_sig * dt * B_norm
+            elif mamba2.token_sig == "softplus":
+                # 4) softplus: delta
+                token_sig = token_sig * dt
+
+            dtype = hidden_states.dtype
+            hidden_states_scale = torch.expm1(token_sig * A * dt) / (token_sig * torch.expm1(A * dt))
+            hidden_states = (hidden_states * hidden_states_scale.unsqueeze(-1)).to(dtype=dtype)
+            dt = dt * token_sig
+
     initial_states = None
     return_final_states = False
-    if "sp" in mamba2.experiments:
+    if mamba2.state_pass:
         # Only load the initial state in the leading CP rank
         if (cp_mesh is None) or cp_mesh.get_local_rank() == 0:
             initial_states = mamba2.prev_final_states[:batch].clone().detach().to(x.device)
@@ -486,7 +520,7 @@ def scan(
     #     print(f"[layer {mamba2.layer_idx}] initial_states: {initial_states.mean(dim=0).norm(p=2)}")
 
     y = chunk_scan_combined_impl(
-        rearrange(x, "b l (h p) -> b l h p", p=mamba2.headdim),
+        hidden_states,
         dt,
         A,
         rearrange(B, "b l (g n) -> b l g n", g=mamba2.ngroups),
@@ -508,7 +542,7 @@ def scan(
         cp_mesh=cp_mesh,
     )
 
-    if "sp" in mamba2.experiments:
+    if mamba2.state_pass:
         if cp_mesh is not None:
             # Only pass the final state from the final rank to the initial rank and store it
             group = cp_mesh.get_group()
@@ -545,7 +579,7 @@ def scan(
             mamba2.prev_final_states[:batch] = y[1].detach()
             y = y[0]
 
-    if "sp" in mamba2.experiments:
+    if mamba2.state_pass:
         if cp_mesh is None or cp_mesh.get_local_rank() == 0:
             experiment_out["final_states"] = mamba2.prev_final_states[:batch]
         else:
