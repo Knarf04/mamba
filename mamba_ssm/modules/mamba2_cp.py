@@ -490,7 +490,6 @@ def scan(
         dtype = hidden_states.dtype
         hidden_states_scale = torch.expm1(A * dt) / (A * dt)
         hidden_states = (hidden_states * hidden_states_scale.unsqueeze(-1)).to(dtype=dtype)
-        dt = dt * token_sig
 
     initial_states = None
     return_final_states = False
