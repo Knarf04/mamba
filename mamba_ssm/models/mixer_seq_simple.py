@@ -12,13 +12,14 @@ from collections import namedtuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from mamba_ssm.models.config_mamba import MambaConfig
 from mamba_ssm.modules.mamba2 import Mamba2
 from mamba_ssm.modules.mamba2_cp import MHACP, Mamba2CP
 from mamba_ssm.modules.mamba_simple import Mamba
 from mamba_ssm.modules.mha import MHA
-from mamba_ssm.modules.mlp import GatedMLP
+from mamba_ssm.modules.mlp import GatedMLP, SimpleMLP
 from mamba_ssm.modules.block import Block
 from mamba_ssm.utils.generation import GenerationMixin
 from mamba_ssm.utils.hf import load_config_hf, load_state_dict_hf
@@ -43,6 +44,7 @@ def create_block(
     cp_mesh: Optional[DeviceMesh] = None,
     cp_mamba_impl: Optional[str] = None,
     cp_attn_impl: Optional[str] = None,
+    mlp_cfg=None,
     experiments={},
     device=None,
     dtype=None,
@@ -85,15 +87,41 @@ def create_block(
     norm_cls = partial(
         nn.LayerNorm if not rms_norm else RMSNorm, eps=norm_epsilon, **factory_kwargs
     )
+    if mlp_cfg is None:
+        mlp_cfg = {}
     if d_intermediate == 0:
         mlp_cls = nn.Identity
     else:
-        mlp_cls = partial(
-            GatedMLP,
-            hidden_features=d_intermediate,
-            out_features=d_model,
-            **factory_kwargs,
-        )
+        mlp_type = mlp_cfg.get("type", "gated")
+        mlp_extra_kwargs = {k: v for k, v in mlp_cfg.items() if k != "type"}
+        if mlp_type == "gated":
+            mlp_cls = partial(
+                GatedMLP,
+                hidden_features=d_intermediate,
+                out_features=d_model,
+                **mlp_extra_kwargs,
+                **factory_kwargs,
+            )
+        elif mlp_type == "simple":
+            # Support string activation names (e.g. "relu2", "silu")
+            activation = mlp_extra_kwargs.get("activation", None)
+            if isinstance(activation, str):
+                _act_fn = {
+                    "silu": F.silu, "relu": F.relu, "gelu": F.gelu,
+                    "relu2": lambda x: F.relu(x).square(),
+                }
+                if activation not in _act_fn:
+                    raise ValueError(f"Unknown activation: {activation}")
+                mlp_extra_kwargs = {**mlp_extra_kwargs, "activation": _act_fn[activation]}
+            mlp_cls = partial(
+                SimpleMLP,
+                hidden_features=d_intermediate,
+                out_features=d_model,
+                **mlp_extra_kwargs,
+                **factory_kwargs,
+            )
+        else:
+            raise ValueError(f"Invalid mlp_cfg type: {mlp_type}, only support 'gated' and 'simple'")
     block = Block(
         d_model,
         mixer_cls,
@@ -144,7 +172,7 @@ class MixerModel(nn.Module):
         self,
         d_model: int,
         n_layer: int,
-        d_intermediate: int,
+        d_intermediate: int,  # int or list[int] for per-block
         vocab_size: int,
         ssm_cfg=None,
         attn_layer_idx=None,
@@ -157,6 +185,7 @@ class MixerModel(nn.Module):
         cp_mesh: Optional[DeviceMesh] = None,
         cp_mamba_impl: Optional[str] = None,
         cp_attn_impl: Optional[str] = None,
+        mlp_cfg=None,
         experiments: dict = {},
         device=None,
         dtype=None,
@@ -177,11 +206,23 @@ class MixerModel(nn.Module):
             if layer_norm_fn is None or rms_norm_fn is None:
                 raise ImportError("Failed to import Triton LayerNorm / RMSNorm kernels")
 
+        # Support per-block d_intermediate: if a list, each element is per-block;
+        # if an int, use the same value for all blocks.
+        if isinstance(d_intermediate, list):
+            assert len(d_intermediate) == n_layer, (
+                f"d_intermediate list length ({len(d_intermediate)}) must match n_layer ({n_layer})"
+            )
+            d_intermediate_per_layer = d_intermediate
+            has_mlp = any(d != 0 for d in d_intermediate)
+        else:
+            d_intermediate_per_layer = [d_intermediate] * n_layer
+            has_mlp = d_intermediate != 0
+
         self.layers = nn.ModuleList(
             [
                 create_block(
                     d_model,
-                    d_intermediate=d_intermediate,
+                    d_intermediate=d_intermediate_per_layer[i],
                     ssm_cfg=ssm_cfg,
                     attn_layer_idx=attn_layer_idx,
                     attn_cfg=attn_cfg,
@@ -193,6 +234,7 @@ class MixerModel(nn.Module):
                     cp_mesh=cp_mesh,
                     cp_mamba_impl=cp_mamba_impl,
                     cp_attn_impl=cp_attn_impl,
+                    mlp_cfg=mlp_cfg,
                     experiments=experiments,
                     **factory_kwargs,
                 )
@@ -209,9 +251,7 @@ class MixerModel(nn.Module):
                 _init_weights,
                 n_layer=n_layer,
                 **(initializer_cfg if initializer_cfg is not None else {}),
-                n_residuals_per_layer=1
-                if d_intermediate == 0
-                else 2,  # 2 if we have MLP
+                n_residuals_per_layer=1 if not has_mlp else 2,
             )
         )
 
@@ -293,6 +333,7 @@ class MambaLMHeadModel(nn.Module, GenerationMixin):
         attn_layer_idx = config.attn_layer_idx
         attn_cfg = config.attn_cfg
         rms_norm = config.rms_norm
+        norm_epsilon = getattr(config, "norm_epsilon", 1e-5)
         residual_in_fp32 = config.residual_in_fp32
         fused_add_norm = config.fused_add_norm
         pad_vocab_size_multiple = config.pad_vocab_size_multiple
@@ -300,7 +341,8 @@ class MambaLMHeadModel(nn.Module, GenerationMixin):
 
         # pass experiment arguments through config
         experiments = getattr(config, "experiments", {})
-        
+        mlp_cfg = getattr(config, "mlp_cfg", {})
+
         super().__init__()
         if vocab_size % pad_vocab_size_multiple != 0:
             vocab_size += pad_vocab_size_multiple - (
@@ -314,6 +356,7 @@ class MambaLMHeadModel(nn.Module, GenerationMixin):
             ssm_cfg=ssm_cfg,
             attn_layer_idx=attn_layer_idx,
             attn_cfg=attn_cfg,
+            norm_epsilon=norm_epsilon,
             rms_norm=rms_norm,
             initializer_cfg=initializer_cfg,
             fused_add_norm=fused_add_norm,
@@ -321,6 +364,7 @@ class MambaLMHeadModel(nn.Module, GenerationMixin):
             cp_mesh=cp_mesh,
             cp_mamba_impl=cp_mamba_impl,
             cp_attn_impl=cp_attn_impl,
+            mlp_cfg=mlp_cfg,
             experiments=experiments,
             **factory_kwargs,
         )

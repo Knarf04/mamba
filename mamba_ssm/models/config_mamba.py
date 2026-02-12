@@ -12,8 +12,10 @@ class MambaConfig:
     attn_layer_idx: list = field(default_factory=list)
     attn_cfg: dict = field(default_factory=dict)
     rms_norm: bool = True
+    norm_epsilon: float = 1e-5
     residual_in_fp32: bool = True
     fused_add_norm: bool = True
     pad_vocab_size_multiple: int = 8
     tie_embeddings: bool = True
+    mlp_cfg: dict = field(default_factory=dict)
     experiments: dict = field(default_factory=dict)

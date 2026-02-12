@@ -32,3 +32,30 @@ class GatedMLP(nn.Module):
         y = y * self.activation(gate)
         y = self.fc2(y)
         return y
+
+
+class SimpleMLP(nn.Module):
+    """Non-gated MLP (e.g. for NemotronH which uses up_proj -> activation -> down_proj)."""
+
+    def __init__(
+        self,
+        in_features,
+        hidden_features=None,
+        out_features=None,
+        activation=F.silu,
+        bias=False,
+        device=None,
+        dtype=None,
+    ):
+        factory_kwargs = {"device": device, "dtype": dtype}
+        super().__init__()
+        out_features = out_features if out_features is not None else in_features
+        hidden_features = (
+            hidden_features if hidden_features is not None else int(8 * in_features / 3)
+        )
+        self.fc1 = nn.Linear(in_features, hidden_features, bias=bias, **factory_kwargs)
+        self.activation = activation
+        self.fc2 = nn.Linear(hidden_features, out_features, bias=bias, **factory_kwargs)
+
+    def forward(self, x):
+        return self.fc2(self.activation(self.fc1(x)))
