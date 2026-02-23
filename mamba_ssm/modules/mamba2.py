@@ -162,9 +162,13 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
             if isinstance(upi_config, dict) and "target_multiplier" in upi_config:
                 # Trainable mode: no external mask; learn per-head scale in [1, target_multiplier].
                 # Parameterised as 1 + sigmoid(raw) * (M-1) so gradient flows through.
+                # Initialised to -M so sigmoid(-M) ≈ 0 → scale ≈ 1 (identity) at startup.
+                # This avoids a 1/scale² gradient suppression from starting at the midpoint.
                 # Not persisted in the main model state_dict — use save_upi_masks() to save.
                 self.upi_target_multiplier = float(upi_config["target_multiplier"])
-                self.upi_scale_raw = nn.Parameter(torch.zeros(self.nheads, device=device, dtype=dtype))
+                self.upi_scale_raw = nn.Parameter(
+                    torch.full((self.nheads,), -self.upi_target_multiplier, device=device, dtype=dtype)
+                )
                 self.upi_scale_raw._is_upi_mask = True  # marker for save_upi_masks() helper
             else:
                 # Non-trainable mode: fixed mask loaded from file.
