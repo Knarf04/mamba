@@ -3,6 +3,94 @@ import argparse
 import torch
 import torch.nn.functional as F
 
+
+# ---------------------------------------------------------------------------
+# Helpers for saving / loading upi masks outside the main model state_dict.
+# Call save_upi_masks() from rank 0 only in distributed (FSDP2) settings.
+# ---------------------------------------------------------------------------
+
+def collect_upi_masks(model):
+    """
+    Walk all modules and collect upi state keyed by layer_idx.
+
+    Returns a dict:
+      {
+        layer_idx: {
+          'type': 'trainable',
+          'raw': Tensor,               # upi_scale_raw on CPU
+          'target_multiplier': float,
+        }
+        or
+        {
+          'type': 'fixed',
+          'mask': Tensor,              # upi_mask on CPU
+        }
+      }
+    """
+    result = {}
+    for module in model.modules():
+        if not hasattr(module, 'layer_idx') or module.layer_idx is None:
+            continue
+        idx = module.layer_idx
+        upi_scale_raw = getattr(module, 'upi_scale_raw', None)
+        upi_mask = getattr(module, 'upi_mask', None)
+        if upi_scale_raw is not None:
+            result[idx] = {
+                'type': 'trainable',
+                'raw': upi_scale_raw.detach().cpu(),
+                'target_multiplier': module.upi_target_multiplier,
+            }
+        elif upi_mask is not None:
+            result[idx] = {
+                'type': 'fixed',
+                'mask': upi_mask.detach().cpu(),
+            }
+    return result
+
+
+def save_upi_masks(model, path):
+    """
+    Save upi masks / trainable scales for all layers to *path*.
+
+    In multi-rank (FSDP2) runs call this from rank 0 only, after
+    parameters have been gathered (e.g. inside save_single_file).
+    """
+    masks = collect_upi_masks(model)
+    if masks:
+        torch.save(masks, path)
+
+
+def load_upi_masks(model, path_or_dict):
+    """
+    Restore upi state into matching model layers.
+
+    *path_or_dict* can be a file path (str) or an already-loaded dict
+    as returned by collect_upi_masks().
+    """
+    if isinstance(path_or_dict, str):
+        masks = torch.load(path_or_dict, weights_only=False)
+    else:
+        masks = path_or_dict
+
+    for module in model.modules():
+        if not hasattr(module, 'layer_idx') or module.layer_idx is None:
+            continue
+        idx = module.layer_idx
+        if idx not in masks:
+            continue
+        entry = masks[idx]
+        upi_scale_raw = getattr(module, 'upi_scale_raw', None)
+        upi_mask = getattr(module, 'upi_mask', None)
+        if entry['type'] == 'trainable' and upi_scale_raw is not None:
+            with torch.no_grad():
+                upi_scale_raw.copy_(
+                    entry['raw'].to(device=upi_scale_raw.device, dtype=upi_scale_raw.dtype)
+                )
+        elif entry['type'] == 'fixed' and upi_mask is not None:
+            upi_mask.copy_(
+                entry['mask'].to(device=upi_mask.device, dtype=upi_mask.dtype)
+            )
+
 # dt = scale_dt(self.upi_mask, dt, self.dt_bias)
 def scale_dt(scale_mask, dt, dt_bias):
     assert (scale_mask.dim() == 0) or (

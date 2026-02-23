@@ -158,11 +158,22 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
         
         self.experiments = experiments
         if "upi" in self.experiments:
-            self.register_buffer('upi_mask', torch.ones(self.nheads, device=device, dtype=dtype), persistent=True)
-            upi_mask_file = self.experiments["upi"]
-            if os.path.isfile(upi_mask_file):
-                mask = torch.load(upi_mask_file)[self.layer_idx].to(device=device, dtype=dtype)
-                self.upi_mask.copy_(mask) # (nheads,)
+            upi_config = self.experiments["upi"]
+            if isinstance(upi_config, dict) and "target_multiplier" in upi_config:
+                # Trainable mode: no external mask; learn per-head scale in [1, target_multiplier].
+                # Parameterised as 1 + sigmoid(raw) * (M-1) so gradient flows through.
+                # Not persisted in the main model state_dict — use save_upi_masks() to save.
+                self.upi_target_multiplier = float(upi_config["target_multiplier"])
+                self.upi_scale_raw = nn.Parameter(torch.zeros(self.nheads, device=device, dtype=dtype))
+                self.upi_scale_raw._is_upi_mask = True  # marker for save_upi_masks() helper
+            else:
+                # Non-trainable mode: fixed mask loaded from file.
+                # persistent=False keeps it off the model state_dict entirely.
+                mask_path = upi_config if isinstance(upi_config, str) else upi_config.get("mask_path")
+                self.register_buffer('upi_mask', torch.ones(self.nheads, device=device, dtype=dtype), persistent=False)
+                if mask_path and os.path.isfile(str(mask_path)):
+                    mask = torch.load(mask_path, weights_only=False)[self.layer_idx].to(device=device, dtype=dtype)
+                    self.upi_mask.copy_(mask)  # (nheads,)
 
         # State Passing Arguments
         # @haochen: Setting fixed batch size at this point. Might need to switch to dynamic batch size in the future. 
@@ -322,8 +333,14 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                 dt_bias = None
                 dt_softplus = False
 
-                if "upi" in self.experiments:              
-                    dt = dt / self.upi_mask
+                if "upi" in self.experiments:
+                    if getattr(self, 'upi_scale_raw', None) is not None:
+                        # Trainable: scale is in [1, target_multiplier], gradient flows through sigmoid
+                        upi_scale = 1.0 + torch.sigmoid(self.upi_scale_raw) * (self.upi_target_multiplier - 1.0)
+                        dt = dt / upi_scale
+                    else:
+                        # Fixed mask (non-trainable)
+                        dt = dt / self.upi_mask
                     
                 elif self.proper_upi:
                     # Dynamic upi scale is only possible with a cache of size O(seq_len)
@@ -458,17 +475,19 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
 
             dt_softplus = True
 
-            if self.proper_upi or self.adaptive_upi:
+            if "upi" in self.experiments or self.proper_upi or self.adaptive_upi:
                 dtype = dt.dtype
                 dt = F.softplus((dt + dt_bias).to(dtype=torch.float32)).to(dtype=dtype)
                 dt_bias = None
                 dt_softplus = False
 
                 if "upi" in self.experiments:
-                    # B & C are grouped and shared across heads
-                    # A & dt are for each head, so we should scale them to get head-wise control
-                    dt = dt / self.upi_mask.unsqueeze(-1)
-            
+                    if getattr(self, 'upi_scale_raw', None) is not None:
+                        upi_scale = 1.0 + torch.sigmoid(self.upi_scale_raw) * (self.upi_target_multiplier - 1.0)
+                        dt = dt / upi_scale.unsqueeze(-1)
+                    else:
+                        dt = dt / self.upi_mask.unsqueeze(-1)
+
                 elif self.proper_upi:
                     # Dynamic upi scale is only possible with a cache of size O(seq_len)
                     dtype = hidden_states.dtype
