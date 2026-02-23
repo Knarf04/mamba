@@ -446,8 +446,14 @@ def scan(
         dt_bias = None
         dt_softplus = False
 
-        if "upi" in mamba2.experiments:              
-            dt = dt / mamba2.upi_mask
+        if "upi" in mamba2.experiments:
+            if getattr(mamba2, 'upi_scale_raw', None) is not None:
+                # Trainable: scale in [1, target_multiplier], gradient flows through sigmoid
+                upi_scale = 1.0 + torch.sigmoid(mamba2.upi_scale_raw) * (mamba2.upi_target_multiplier - 1.0)
+                dt = dt / upi_scale
+            else:
+                # Fixed mask (non-trainable)
+                dt = dt / mamba2.upi_mask
             
         elif mamba2.proper_upi:
             # Dynamic upi scale is only possible with a cache of size O(seq_len)
