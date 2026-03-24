@@ -241,8 +241,8 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
         
         initial_states = None
         if self.state_pass:
-            initial_states = self.prev_final_states[:batch].clone().detach().to(x.device)
-            initial_states[self.state_pass_dropout[:batch]] = 0.0
+            initial_states = self.prev_final_states[:batch].clone().detach().to(u.device)
+            initial_states[self.sp_dropout[:batch]] = 0.0
 
         # Record ERF and logits only when using the less fused kernel
         # if self.use_mem_eff_path and inference_params is None \
