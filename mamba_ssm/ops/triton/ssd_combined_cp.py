@@ -948,10 +948,6 @@ class StatePassingAllGatherCP(_StatePassingImpl):
                 "initial_states can only be non-trival on the lead CP rank."
             )
         is_last_rank = local_rank == cp_mesh.size() - 1
-        if not is_last_rank and dfinal_states is not None:
-            raise ValueError(
-                "dfinal_states can only be non-trival on the last CP rank."
-            )
 
         assert bwd_args is not None
         initial_states_corrected, dA_chunk_sum_allgather = bwd_args
@@ -1014,12 +1010,25 @@ class StatePassingAllGatherCP(_StatePassingImpl):
                 # HACK: initial_states=True ensures dfinal_states_corrected is never None, maybe
                 # just zeros
                 initial_states=True,
-                dfinal_states=dfinal_states,
+                # Pass None: the last rank's contribution is already captured in
+                # dinitial_states_partial. Per-rank dfinal_states (e.g. retention loss)
+                # are added separately below — not here, to avoid double counting.
+                dfinal_states=None,
                 seq_idx=seq_idx,
                 dstates_dtype=dstates_dtype,
                 states_dtype=states_dtype,
                 cp_mesh=cp_mesh,
             )
+
+            # Combine chain gradient (from downstream ranks) with per-rank gradient
+            # (e.g. from retention loss). Pass 2 replaces Pass 1 entirely, so no
+            # double counting.
+            total_dfinal_states = dfinal_states_corrected
+            if dfinal_states is not None:
+                if total_dfinal_states is not None:
+                    total_dfinal_states = total_dfinal_states + dfinal_states
+                else:
+                    total_dfinal_states = dfinal_states
 
             # And repeat the backward with the now-corrected dfinal_states
             dstates_out, ddA_chunk_cumsum, dinitial_states, states = (
@@ -1029,7 +1038,7 @@ class StatePassingAllGatherCP(_StatePassingImpl):
                     dA_chunk_cumsum=dA_chunk_cumsum,
                     dstates=dstates,
                     initial_states=initial_states_corrected,
-                    dfinal_states=dfinal_states_corrected,
+                    dfinal_states=total_dfinal_states,
                     seq_idx=seq_idx,
                     dstates_dtype=dstates_dtype,
                     states_dtype=states_dtype,

@@ -509,9 +509,9 @@ def scan(
         if (cp_mesh is None) or (cp_mesh.get_local_rank() == cp_mesh.size() - 1):
             return_final_states = True
 
-    # Print initial state magnitude for checking on the first rank
-    # if cp_mesh.get_local_rank() == 0:
-    #     print(f"[layer {mamba2.layer_idx}] initial_states: {initial_states.mean(dim=0).norm(p=2)}")
+    # retention_loss requires final_states from ALL ranks
+    if mamba2.retention_loss:
+        return_final_states = True
 
     y = chunk_scan_combined_impl(
         hidden_states,
@@ -527,7 +527,7 @@ def scan(
         if not mamba2.rmsnorm
         else None,
         dt_bias=dt_bias,
-        initial_states=initial_states, 
+        initial_states=initial_states,
         dt_softplus=dt_softplus,
         seq_idx=seq_idx,
         cu_seqlens=None,
@@ -536,43 +536,53 @@ def scan(
         cp_mesh=cp_mesh,
     )
 
+    # --- Extract final_states; normalize y to plain output tensor ---
+    final_states_local = None
+    if return_final_states:
+        final_states_local = y[1]
+        y = y[0]
+
+    # --- State passing: use final_states_local for cross-segment state propagation ---
     if mamba2.state_pass:
         if cp_mesh is not None:
-            # Only pass the final state from the final rank to the initial rank and store it
             group = cp_mesh.get_group()
             initial_rank = 0
             final_rank = cp_mesh.size() - 1
             local_rank = cp_mesh.get_local_rank()
 
-            # Keep the prev_final_states on the final rank always updated, 
-            # and use reduce to sync to initial rank
             if local_rank == final_rank:
-                mamba2.prev_final_states[:batch] = y[1].detach()
-                y = y[0]
-            else: 
+                assert final_states_local is not None
+                mamba2.prev_final_states[:batch] = final_states_local.detach()
+            else:
                 mamba2.prev_final_states = torch.zeros_like(mamba2.prev_final_states)
-            
-            # @haochen: both all_reduce and reduce work
-            
-            # dist.all_reduce(
-            #     mamba2.prev_final_states, 
-            #     op=dist.ReduceOp.SUM, 
-            #     group=group, 
-            #     async_op=False
-            # )
 
             dist.reduce(
-                mamba2.prev_final_states, 
-                dst=dist.get_global_rank(group, initial_rank), 
-                op=dist.ReduceOp.SUM, 
-                group=group, 
+                mamba2.prev_final_states,
+                dst=dist.get_global_rank(group, initial_rank),
+                op=dist.ReduceOp.SUM,
+                group=group,
                 async_op=False
             )
-
         else:
-            mamba2.prev_final_states[:batch] = y[1].detach()
-            y = y[0]
+            mamba2.prev_final_states[:batch] = final_states_local.detach()
 
+    # --- Retention loss: differentiable all-gather of per-rank final states ---
+    if mamba2.retention_loss:
+        if cp_mesh is not None:
+            # funcol.all_gather_tensor is differentiable (backward = reduce_scatter)
+            gathered = funcol.all_gather_tensor(
+                final_states_local.contiguous(), gather_dim=0, group=cp_mesh.get_group()
+            )
+            # gathered: (batch * num_cp_ranks, nheads, headdim, d_state)
+            # → (batch, num_cp_ranks, nheads, headdim, d_state)
+            experiment_out["retention_states"] = rearrange(
+                gathered, "(r b) ... -> b r ...", r=cp_mesh.size()
+            )
+        else:
+            # Single device: uniform shape (batch, 1, nheads, headdim, d_state)
+            experiment_out["retention_states"] = final_states_local.unsqueeze(1)
+
+    # --- State pass experiment output ---
     if mamba2.state_pass:
         if cp_mesh is None or cp_mesh.get_local_rank() == 0:
             experiment_out["final_states"] = mamba2.prev_final_states[:batch]

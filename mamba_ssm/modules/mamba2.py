@@ -200,6 +200,7 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
         self.scale_portion = self.experiments.get("scale_portion", 0.95)
         
         self.exact = self.experiments.get("exact", False)
+        self.retention_loss = self.experiments.get("retention_loss", False)
 
     def forward(self, u, seqlen=None, seq_idx=None, cu_seqlens=None, inference_params=None):
         """
@@ -390,10 +391,10 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                 cu_seqlens=cu_seqlens,
                 **dt_limit_kwargs,
                 initial_states=initial_states,
-                return_final_states=(ssm_state is not None) or self.state_pass,
+                return_final_states=(ssm_state is not None) or self.state_pass or self.retention_loss,
                 return_varlen_states=cu_seqlens is not None and inference_params is not None,
             )
-            if (ssm_state is not None) or self.state_pass:
+            if (ssm_state is not None) or self.state_pass or self.retention_loss:
                 y, final_states, *rest = y
                 if ssm_state is not None:
                     if cu_seqlens is None:
@@ -403,6 +404,9 @@ class Mamba2(nn.Module, PyTorchModelHubMixin):
                         ssm_state.copy_(varlen_states)
                 if self.state_pass:
                     self.prev_final_states[:final_states.shape[0]].copy_(final_states.detach())
+                if self.retention_loss:
+                    # (batch, 1, nheads, headdim, d_state) — uniform shape with CP path
+                    experiment_out["retention_states"] = final_states.unsqueeze(1)
             y = rearrange(y, "b l h p -> b l (h p)")
             if self.rmsnorm:
                 y = self.norm(y, z)
