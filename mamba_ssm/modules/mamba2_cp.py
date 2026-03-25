@@ -579,7 +579,7 @@ def scan(
             )
             dist.all_gather_into_tensor(
                 retention_states_allgather,
-                final_states_local.contiguous(),
+                final_states_local.detach().contiguous(),
                 group=group,
                 async_op=False,
             )
