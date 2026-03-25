@@ -566,18 +566,19 @@ def scan(
         else:
             mamba2.prev_final_states[:batch] = final_states_local.detach()
 
-    # --- Retention loss: differentiable all-gather of per-rank final states ---
+    # --- Retention loss: all-gather final states across CP ranks ---
     if mamba2.retention_loss:
         if cp_mesh is not None:
-            # funcol.all_gather_tensor is differentiable (backward = reduce_scatter)
-            gathered = funcol.all_gather_tensor(
-                final_states_local.contiguous(), gather_dim=0, group=cp_mesh.get_group()
-            )
-            # gathered: (batch * num_cp_ranks, nheads, headdim, d_state)
-            # → (batch, num_cp_ranks, nheads, headdim, d_state)
-            experiment_out["retention_states"] = rearrange(
-                gathered, "(r b) ... -> b r ...", r=cp_mesh.size()
-            )
+            group = cp_mesh.get_group()
+            world_size = cp_mesh.size()
+            local_rank = cp_mesh.get_local_rank()
+            # Non-differentiable all-gather (same pattern as CP internal collectives)
+            gathered_list = [torch.empty_like(final_states_local) for _ in range(world_size)]
+            dist.all_gather(gathered_list, final_states_local.detach().contiguous(), group=group)
+            # Replace local rank's slot with grad-enabled tensor for backprop
+            gathered_list[local_rank] = final_states_local
+            # Stack → (B, R, H, hd, ds)
+            experiment_out["retention_states"] = torch.stack(gathered_list, dim=1)
         else:
             # Single device: uniform shape (batch, 1, nheads, headdim, d_state)
             experiment_out["retention_states"] = final_states_local.unsqueeze(1)
