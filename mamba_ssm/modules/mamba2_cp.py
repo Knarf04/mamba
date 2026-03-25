@@ -572,12 +572,22 @@ def scan(
             group = cp_mesh.get_group()
             world_size = cp_mesh.size()
             local_rank = cp_mesh.get_local_rank()
-            # Non-differentiable all-gather (same pattern as CP internal collectives)
-            gathered_list = [torch.empty_like(final_states_local) for _ in range(world_size)]
-            dist.all_gather(gathered_list, final_states_local.detach().contiguous(), group=group)
+            # Same pattern as StatePassingAllGatherCP.fwd (ssd_combined_cp.py:864-879)
+            retention_states_allgather = torch.empty(
+                world_size, *final_states_local.shape,
+                device=final_states_local.device, dtype=final_states_local.dtype,
+            )
+            dist.all_gather_into_tensor(
+                retention_states_allgather,
+                final_states_local.contiguous(),
+                group=group,
+                async_op=False,
+            )
+            # (R, B, H, hd, ds) → list of (B, H, hd, ds), one per rank
+            gathered_list = list(retention_states_allgather.unbind(dim=0))
             # Replace local rank's slot with grad-enabled tensor for backprop
             gathered_list[local_rank] = final_states_local
-            # Stack → (B, R, H, hd, ds)
+            # → (B, R, H, hd, ds)
             experiment_out["retention_states"] = torch.stack(gathered_list, dim=1)
         else:
             # Single device: uniform shape (batch, 1, nheads, headdim, d_state)
