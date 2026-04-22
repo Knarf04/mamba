@@ -756,20 +756,9 @@ class MHACP(MHA):
         if self.d_conv:
             raise NotImplementedError
 
-        # When True, the ring-attention forward runs under `torch.no_grad()`,
-        # so ring_flash_attn never registers an autograd Function and its
-        # backward (including the KV allgather on the CP mesh) is never
-        # enqueued. Safe only when the caller does not need grads for q/k/v
-        # or for this module's params (e.g. fully frozen attn blocks under
-        # `mamba_post_attn`). The forward's ring P2P of K/V still fires — only
-        # the backward-side collectives are suppressed.
-        self._skip_backward = False
-
     def forward(self, x, inference_params=None):
         if inference_params is not None:
             raise NotImplementedError
-
-        skip_backward = getattr(self, "_skip_backward", False)
 
         qkv = self.in_proj(x)
 
@@ -799,31 +788,14 @@ class MHACP(MHA):
             kv = seq_to_zigzag_comms(kv, self.cp_mesh, self.seq_dim)
 
         k, v = kv.unbind(dim=-3)
-        if skip_backward:
-            # Run ring-attention without autograd tracking. ring_flash_attn
-            # never registers its backward Function, so the reverse ring + KV
-            # allgather on the CP mesh is never enqueued. `context` comes out
-            # with requires_grad=False, matching what you'd get in the fully
-            # frozen fast path, so downstream autograd behaves exactly as if
-            # this block were a regular frozen module.
-            with torch.no_grad():
-                context = self.ring_flash_attn_impl(
-                    q,
-                    k,
-                    v,
-                    causal=self.causal,
-                    softmax_scale=self.softmax_scale,
-                    group=self.cp_mesh.get_group(),
-                )
-        else:
-            context = self.ring_flash_attn_impl(
-                q,
-                k,
-                v,
-                causal=self.causal,
-                softmax_scale=self.softmax_scale,
-                group=self.cp_mesh.get_group(),
-            )
+        context = self.ring_flash_attn_impl(
+            q,
+            k,
+            v,
+            causal=self.causal,
+            softmax_scale=self.softmax_scale,
+            group=self.cp_mesh.get_group(),
+        )
 
         context = rearrange(context, "... h d -> ... (h d)")
         if self.mlp_dim > 0:
